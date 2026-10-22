@@ -1,0 +1,10 @@
+.build/
+build/
+dist/
+snapshots/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+.npm-cache*/
+dsh-plugin-bluefish-pet/
