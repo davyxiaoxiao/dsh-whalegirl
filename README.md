@@ -186,7 +186,7 @@ scripts/make_preview.py    README 海报
 ./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --dump
 
 # 启动时打开任务面板，并把窗口/点击穿透日志写到 ~/Library/Logs/whalegirl.log
-./build/WhaleGirl.app/Contents/MacOS/BlueFish --log --open-card
+./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --log --open-card
 ```
 
 ## 隐私
