@@ -1,6 +1,6 @@
 # 鲸鱼娘 · DeepSeek Harness 桌面宠物
 
-[下载安装包](https://github.com/davyxiaoxiao/whalegirl/releases) · [DSH 插件](https://github.com/davyxiaoxiao/dsh-plugin-bluefish-pet)
+[下载安装包](https://github.com/davyxiaoxiao/dsh-whalegirl/releases) · [DSH 插件](https://github.com/davyxiaoxiao/dsh-plugin-bluefish-pet)
 
 ![preview](preview.png)
 
