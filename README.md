@@ -176,7 +176,9 @@ scripts/make_preview.py    README 海报
 想让 DSH 侧边栏出现「鲸鱼娘」按钮、并随 DSH 自动启动：
 
 - 插件仓库：[dsh-plugin-bluefish-pet](https://github.com/davyxiaoxiao/dsh-plugin-bluefish-pet)
-- 在 DSH 左侧「插件」页输入 `github:davyxiaoxiao/dsh-plugin-bluefish-pet` 安装，重启 DSH；
+- 在 DSH 左侧「插件」页输入 `dsh-bluefish-pet`（npm）安装，重启 DSH；
+- 更新插件时先卸载再重装，或使用插件市场的「更新」；App 更新直接覆盖安装新 pkg；
+- GitHub 备用：`github:davyxiaoxiao/dsh-plugin-bluefish-pet`；
 - 插件会从 `/Applications/WhaleGirl.app` 启动本 App；侧边栏按钮通过 App 内置的 `127.0.0.1:47113` 控制端口切换显示 / 隐藏。
 
 ## 调试
