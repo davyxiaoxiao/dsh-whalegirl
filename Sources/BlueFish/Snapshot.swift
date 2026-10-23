@@ -4,11 +4,13 @@ enum SnapshotRunner {
     private static var window: NSWindow?
     private static var card: StatusCardController?
 
-    static func run(directory: String) {
+    static func run(directory: String, scale: CGFloat = 1) {
         let url = URL(fileURLWithPath: directory)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 
-        let stage = PetStageView(frame: NSRect(x: 0, y: 0, width: 360, height: 400))
+        let size = PetLayout.panelSize(for: scale)
+        let stage = PetStageView(frame: NSRect(origin: .zero, size: size))
+        stage.setSizeScale(scale)
         let w = NSWindow(
             contentRect: stage.bounds,
             styleMask: [.borderless],
@@ -26,7 +28,7 @@ enum SnapshotRunner {
         let cardController = StatusCardController()
         card = cardController
         cardController.update(mockStatus())
-        cardController.show(relativeTo: NSRect(x: 100, y: 100, width: 360, height: 400))
+        cardController.show(relativeTo: NSRect(x: 100, y: 100, width: size.width, height: size.height))
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             let shots: [(String, PetMood, String, String, NSColor, Bool)] = [

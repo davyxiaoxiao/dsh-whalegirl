@@ -54,7 +54,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>鲸鱼娘</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0.1</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -63,7 +63,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
             <array><string>bluefish</string></array>
         </dict>
     </array>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>LSMultipleInstancesProhibited</key><true/>

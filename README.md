@@ -13,6 +13,7 @@
 ## 它现在会做什么
 
 - **常驻桌面**：无边框、透明、置顶，所有 Space 可见；透明区域鼠标穿透，不会挡住正常点击。
+- **可调大小**：右键宠物 →「宠物大小」，或点菜单栏小鱼的菜单 →「宠物大小」，四档：迷你 60% / 小 75% / 标准 100% / 大 120%。窗口会跟着立绘一起伸缩，状态条和气泡始终贴在宠物头顶，选择会自动保存。
 - **任务看板**：点一下宠物打开「深海任务台」，看每个会话在做什么、跑了多久、什么时候完成、今天花了多少钱。
 - **跳到 DSH 会话**：点任务行会激活 DSH 桌面版，并在它的侧栏里找到对应会话点开（通过 macOS 辅助功能 API）。首次使用需要在「系统设置 → 隐私与安全性 → 辅助功能」里勾选鲸鱼娘；没授权时会退化成「把会话名复制到剪贴板 + 把 DSH 切到前台」。
 - **状态立绘**：待命 / 干饭（吃白饭）/ 等你确认 / 出错 / 完成 / 睡觉 / **DSH 断连**，共 7 种状态。
@@ -48,7 +49,7 @@ open /Applications/WhaleGirl.app
 
 开机自启：**系统设置 → 通用 → 登录项 → +**，选择 `WhaleGirl.app`。
 
-第一次启动它会出现在屏幕右下角（Dock 上方），直接拖动即可换位置；位置和提示音设置会自动保存。
+第一次启动它会出现在屏幕右下角（Dock 上方），直接拖动即可换位置；位置、提示音和大小设置会自动保存。
 
 ## 操作
 
@@ -61,11 +62,14 @@ open /Applications/WhaleGirl.app
 | 看任务面板用量条 | `Go 5h %`、`Go 周 %`、`Go 月 %`、`今日 tokens` 四个数字 |
 | 拖动宠物 | 移动位置（靠近屏幕边缘会吸附）；拖动期间播放走路帧动画 |
 | 双击宠物 | 咕噜咕噜～随机互动 |
-| 右键宠物 | 快捷菜单（任务面板、暂停、提示音、重置位置、退出） |
-| 菜单栏小鱼 | 状态摘要、最近任务、暂停监控、提示音、重置位置、退出 |
+| 右键宠物 | 快捷菜单（任务面板、暂停、提示音、宠物大小、重置位置、退出） |
+| 右键宠物 → 宠物大小 | 迷你 60% / 小 75% / 标准 100% / 大 120%，立即生效并记住 |
+| 菜单栏小鱼 | 状态摘要、最近任务、暂停监控、提示音、宠物大小、重置位置、退出 |
 | 点击任务行 | 跳到 DSH 桌面版里对应的会话 |
 | 右键任务行 | 跳到 DSH 会话 / 在 Finder 中打开工作区 / 复制会话 ID / 复制日志路径 |
 | 右键宠物 → 授权跳转 | 打开辅助功能授权提示和系统设置面板 |
+
+也可以在终端里直接切档（方便脚本 / 快捷指令）：`open bluefish://size/0.75`，`/75` 也认。
 
 ## 状态是怎么推断的
 
@@ -145,7 +149,7 @@ Assets/pet_walk_c.png  拖动走路 · 朝右 · 左脚在前
 
 - Q 版四态原图切分：`scripts/prepare_sheet.py`，当前切分线 `x=620, y=620`（`make art`）。
 - 走路三帧切分：`scripts/prepare_walk.py dsh-image-gen/image-bce7de69.png --splits 486,978`（`make walk`）；三帧是朝右的三分之四侧身，往左走时整体镜像。三帧统一对齐到同一画布（头部中心 + 地平线），所以换帧不会抖。
-- 工作姿态比站立姿态容易显大，`Sources/BlueFish/PetView.swift` 里 `moodScale` 当前是 `0.85`；想再小改这个值即可。
+- 工作姿态比站立姿态容易显大，`Sources/BlueFish/PetAction.swift` 里 work 动作的 `scale` 当前是 `0.85`；玩家可以在「宠物大小」里整体缩放，想改各姿态的相对大小仍改这张动作表。
 - 角色设定：Q 版、小号蓝色鱼鳍耳、两条细腿、无鱼尾；根据用户提供的 DeepSeek-chan 同人图重绘。
 
 ## 目录
@@ -158,6 +162,7 @@ Sources/BlueFish/
   Models.swift             会话/全局状态模型
   PetWindowController.swift 桌宠窗口、气泡、菜单栏联动
   PetAction.swift          动作表 + PetActionManager（所有动作的帧/时长/动画/徽章/粒子）
+  PetSize.swift            大小档位、窗口尺寸换算、大小菜单项
   PetView.swift            立绘渲染、气泡、粒子、命中区域
   StatusCard.swift         深海任务台面板
   MenuBar.swift            菜单栏小鱼
@@ -189,6 +194,9 @@ scripts/make_preview.py    README 海报
 
 # 启动时打开任务面板，并把窗口/点击穿透日志写到 ~/Library/Logs/whalegirl.log
 ./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --log --open-card
+
+# 用指定大小离屏渲染（0.6 = 迷你，1.2 = 大），检查小/大尺寸下的布局
+./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --snapshot /tmp/wg-small --scale 0.6
 ```
 
 ## 隐私
@@ -196,7 +204,7 @@ scripts/make_preview.py    README 海报
 - 全程离线，没有任何网络请求。
 - 只读 `~/.dsh/sessions`、`~/.dsh/storages/workspace.json` 和 `~/.dsh/storages/cost-meter/ledger.json`。
 - 不读写 DSH 的会话内容以外的数据，不上传任何东西。
-- 自身只在 `~/Library/Preferences/com.daiwei.bluefish.plist` 存位置和提示音开关。
+- 自身只在 `~/Library/Preferences/com.daiwei.bluefish.plist` 存位置、提示音开关和宠物大小。
 
 ## 已知取舍
 

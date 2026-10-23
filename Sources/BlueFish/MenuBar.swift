@@ -14,6 +14,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onResetPosition: (() -> Void)?
     var onQuit: (() -> Void)?
     var onOpenSession: ((SessionSnapshot) -> Void)?
+    var currentSize: (() -> PetSizePreset)?
+    var onSelectSize: ((PetSizePreset) -> Void)?
     var isPetVisible: (() -> Bool)?
     var isCardVisible: (() -> Bool)?
 
@@ -128,6 +130,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         soundItem.state = soundsEnabled ? .on : .off
         menu.addItem(soundItem)
 
+        menu.addItem(makePetSizeMenu(
+            target: self,
+            action: #selector(selectSize(_:)),
+            selected: currentSize?() ?? .standard
+        ))
+
         if !recentSessions.isEmpty {
             menu.addItem(.separator())
             let section = NSMenuItem(title: "最近任务", action: nil, keyEquivalent: "")
@@ -177,6 +185,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleSound() { onToggleSound?() }
     @objc private func resetPosition() { onResetPosition?() }
     @objc private func quit() { onQuit?() }
+    @objc private func selectSize(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let preset = PetSizePreset(rawValue: raw) else { return }
+        onSelectSize?(preset)
+    }
 
     @objc private func openSession(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,

@@ -315,6 +315,7 @@ final class PetSpriteView: NSView {
     private var currentMood: PetMood = .idle
     private var currentImageName: String?
     private var currentScale: CGFloat = 1
+    private var sizeScale: CGFloat = 1
     private var lastImageSize: NSSize = .zero
     private var walkFacingLeft = false
     private var walkLean: CGFloat = 0
@@ -336,13 +337,14 @@ final class PetSpriteView: NSView {
     override func layout() {
         super.layout()
         let w = bounds.width
-        glowLayer.frame = NSRect(x: (w - 220) / 2, y: 30, width: 220, height: 220)
-        contactShadow.frame = NSRect(x: w / 2 - 62, y: 2, width: 124, height: 16)
+        let glow = 220 * sizeScale
+        glowLayer.frame = NSRect(x: (w - glow) / 2, y: 30, width: glow, height: glow)
         contactShadow.position = CGPoint(x: w / 2, y: 10)
         floatLayer.position = CGPoint(x: w / 2, y: 18)
         layoutSprite(scale: currentScale)
         bubbleEmitter.emitterPosition = CGPoint(x: w / 2, y: 34)
-        sparkleEmitter.emitterPosition = CGPoint(x: w / 2, y: 120)
+        sparkleEmitter.emitterSize = CGSize(width: 170 * sizeScale, height: 120 * sizeScale)
+        sparkleEmitter.emitterPosition = CGPoint(x: w / 2, y: 30 + 90 * sizeScale)
         positionZzz()
     }
 
@@ -465,10 +467,10 @@ final class PetSpriteView: NSView {
 
     private func layoutSprite(scale requestedScale: CGFloat? = nil) {
         guard let name = currentImageName, let image = SpriteArt.image(named: name), image.size.height > 0 else { return }
-        let maxH: CGFloat = 224
+        let maxH = PetLayout.baseSpriteHeight
         let maxW: CGFloat = 310
         let moodScale = requestedScale ?? currentScale
-        let scale = min(maxH / image.size.height, maxW / image.size.width) * moodScale
+        let scale = min(maxH / image.size.height, maxW / image.size.width) * moodScale * sizeScale
         let width = image.size.width * scale
         let height = image.size.height * scale
         floatLayer.bounds = CGRect(x: 0, y: 0, width: width, height: height)
@@ -487,6 +489,26 @@ final class PetSpriteView: NSView {
         badgeText.frame = CGRect(x: 0, y: 4, width: 24, height: 18)
         contactShadow.frame = CGRect(x: bounds.width / 2 - width * 0.33, y: 2, width: width * 0.66, height: 16)
         positionZzz()
+    }
+
+    /// Scale the current sprite without touching the mood animation. The stage
+    /// calls this when the user picks another size.
+    func setSizeScale(_ scale: CGFloat) {
+        let clamped = PetLayout.clampScale(scale)
+        guard abs(clamped - sizeScale) > 0.001 else { return }
+        sizeScale = clamped
+        layoutSprite(scale: currentScale)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        imageLayer.shadowRadius = shadowRadius(for: currentMood)
+        CATransaction.commit()
+        needsLayout = true
+    }
+
+    /// The halo hugs the sprite, so it has to shrink with it — otherwise a
+    /// small pet still looks big because of the glow around it.
+    private func shadowRadius(for mood: PetMood) -> CGFloat {
+        (mood == .waiting ? 26 : 19) * sizeScale
     }
 
     // MARK: - Action rendering (driven by PetActionManager)
@@ -598,7 +620,7 @@ final class PetSpriteView: NSView {
         CATransaction.setAnimationDuration(0.45)
         imageLayer.shadowColor = mood.tint.cgColor
         imageLayer.shadowOpacity = mood == .sleeping ? 0.18 : 0.33
-        imageLayer.shadowRadius = mood == .waiting ? 26 : 19
+        imageLayer.shadowRadius = shadowRadius(for: mood)
         contactShadow.opacity = mood == .happy ? 0.18 : 0.30
         let colors = [
             mood.tint.withAlphaComponent(mood == .working ? 0.22 : 0.14).cgColor,
@@ -664,7 +686,8 @@ final class PetSpriteView: NSView {
     func playJump() {
         let jump = CAKeyframeAnimation(keyPath: "position.y")
         let base = floatLayer.position.y
-        jump.values = [base, base + 26, base + 4, base + 12, base]
+        let lift = 26 * sizeScale
+        jump.values = [base, base + lift, base + lift * 0.15, base + lift * 0.46, base]
         jump.keyTimes = [0, 0.3, 0.55, 0.75, 1]
         jump.duration = 0.75
         jump.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -674,7 +697,8 @@ final class PetSpriteView: NSView {
 
     func playShake() {
         let shake = CAKeyframeAnimation(keyPath: "transform.translation.x")
-        shake.values = [0, -7, 7, -5, 5, -2, 0]
+        let d = 7 * sizeScale
+        shake.values = [0, -d, d, -d * 0.7, d * 0.7, -d * 0.3, 0]
         shake.keyTimes = [0, 0.15, 0.3, 0.45, 0.6, 0.8, 1]
         shake.duration = 0.5
         floatLayer.add(shake, forKey: "shake")
@@ -759,7 +783,12 @@ final class PetSpriteView: NSView {
     private func positionZzz() {
         guard !zzzLayers.isEmpty else { return }
         for (i, layer) in zzzLayers.enumerated() {
-            let start = NSRect(x: bounds.width / 2 + 28 + CGFloat(i) * 14, y: 176 + CGFloat(i) * 6, width: 20, height: 18)
+            let start = NSRect(
+                x: bounds.width / 2 + (28 + CGFloat(i) * 14) * sizeScale,
+                y: 30 + (146 + CGFloat(i) * 6) * sizeScale,
+                width: 20,
+                height: 18
+            )
             layer.position = CGPoint(x: start.midX, y: start.midY)
         }
     }
@@ -829,6 +858,7 @@ final class PetStageView: NSView {
     private var didDrag = false
     private var isMouseInside = false
     private var trackingArea: NSTrackingArea?
+    private(set) var sizeScale: CGFloat = 1
 
     override var isFlipped: Bool { false }
     override var isOpaque: Bool { false }
@@ -853,22 +883,39 @@ final class PetStageView: NSView {
     override func layout() {
         super.layout()
         let w = bounds.width
-        sprite.frame = NSRect(x: (w - 320) / 2, y: 12, width: 320, height: 248)
+        let spriteHeight = max(248, 18 + PetLayout.baseSpriteHeight * sizeScale + 6)
+        sprite.frame = NSRect(x: (w - 320) / 2, y: 12, width: 320, height: spriteHeight)
         layoutChip()
         layoutBubble()
+    }
+
+    /// Apply a new user size without rebuilding the pet's state. The window is
+    /// resized by the controller; here the sprite and the decorations scale.
+    func setSizeScale(_ scale: CGFloat) {
+        let clamped = PetLayout.clampScale(scale)
+        guard abs(clamped - sizeScale) > 0.001 else { return }
+        sizeScale = clamped
+        sprite.setSizeScale(clamped)
+        needsLayout = true
+    }
+
+    /// The window keeps its 400pt design box at 100% and grows upward when the
+    /// pet is bigger, so anything anchored to the top follows the extra height.
+    private var verticalExtra: CGFloat {
+        bounds.height - PetLayout.designHeight
     }
 
     private func layoutChip() {
         let size = chip.sizeThatFits(320)
         let spriteTop = sprite.convert(sprite.imageRect, to: self).maxY
-        let y = min(250, spriteTop + 16)
+        let y = min(250 + verticalExtra, spriteTop + 16)
         let rect = NSRect(x: (bounds.width - size.width) / 2, y: y, width: size.width, height: size.height)
         chip.frame = rect
     }
 
     private func layoutBubble() {
         let size = bubble.sizeThatFits(356)
-        let rect = NSRect(x: (bounds.width - size.width) / 2, y: 252, width: size.width, height: size.height)
+        let rect = NSRect(x: (bounds.width - size.width) / 2, y: 252 + verticalExtra, width: size.width, height: size.height)
         bubble.frame = rect
     }
 

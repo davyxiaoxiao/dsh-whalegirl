@@ -18,6 +18,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     private var bubbleCollapsed = false
     private var paused = false
     private var soundsEnabled = true
+    private var petScale: CGFloat = 1
     private var currentMood: PetMood = .offline
     private var lastPhases: [String: SessionPhase] = [:]
     private var transientMood: PetMood?
@@ -31,7 +32,8 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     private static let originKey = "BlueFish.petOrigin"
 
     override init() {
-        let size = NSSize(width: 360, height: 400)
+        let scale = PetLayout.storedScale()
+        let size = PetLayout.panelSize(for: scale)
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -43,6 +45,9 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         monitor = DSHMonitor()
 
         super.init()
+
+        petScale = scale
+        stage.setSizeScale(scale)
 
         panel.contentView = stage
         panel.isOpaque = false
@@ -81,6 +86,13 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.onOpenSession = { [weak self] session in
             self?.jumpToSession(session)
+        }
+        menuBar.currentSize = { [weak self] in
+            guard let self else { return .standard }
+            return PetSizePreset.nearest(to: self.petScale)
+        }
+        menuBar.onSelectSize = { [weak self] preset in
+            self?.setPetScale(preset.scale)
         }
         menuBar.isPetVisible = { [weak self] in self?.panel.isVisible ?? false }
         menuBar.isCardVisible = { [weak self] in self?.card.visible ?? false }
@@ -268,7 +280,8 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     }
 
     /// `bluefish://toggle | show | hide | quit` — used by the DSH plugin and
-    /// any other launcher.
+    /// any other launcher. `bluefish://size/0.75` (or `/75`) changes the pet
+    /// size without opening the menu.
     func handle(url: URL) {
         guard url.scheme?.lowercased() == "bluefish" else { return }
         switch (url.host ?? url.path.replacingOccurrences(of: "/", with: "")).lowercased() {
@@ -278,8 +291,14 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         case "quit": NSApp.terminate(nil)
         case "recenter": resetPosition()
         case "axdump": DSHFocus.dumpAXTree()
+        case "size": applySizeURL(url)
         default: break
         }
+    }
+
+    private func applySizeURL(_ url: URL) {
+        guard let raw = url.pathComponents.last, let value = Double(raw) else { return }
+        setPetScale(CGFloat(value > 2 ? value / 100 : value))
     }
 
     /// A tiny state file so the DSH plugin can report running/visible state.
@@ -728,6 +747,26 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         menuBar.update(status: status, paused: paused, sounds: soundsEnabled)
     }
 
+    /// Resize the whole pet window in place. The bottom edge keeps its screen
+    /// position, so the pet grows/shrinks from its feet instead of jumping.
+    private func setPetScale(_ scale: CGFloat) {
+        let target = PetLayout.clampScale(scale)
+        guard abs(target - petScale) > 0.001 else { return }
+        let oldFrame = panel.frame
+        petScale = target
+        defaults.set(Double(target), forKey: PetLayout.scaleDefaultsKey)
+
+        var frame = oldFrame
+        frame.size = PetLayout.panelSize(for: target)
+        panel.setFrame(frame, display: true)
+        stage.setSizeScale(target)
+        stage.layoutSubtreeIfNeeded()
+        clampToScreen()
+        rememberPosition()
+        menuBar.update(status: status, paused: paused, sounds: soundsEnabled)
+        DebugLog.write("pet size=\(target) frame=\(panel.frame)")
+    }
+
     private func reactToPoke() {
         lastInteractionAt = Date()
         transientMood = .happy
@@ -761,6 +800,12 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         soundItem.state = soundsEnabled ? .on : .off
         menu.addItem(soundItem)
 
+        menu.addItem(makePetSizeMenu(
+            target: self,
+            action: #selector(menuSelectSize(_:)),
+            selected: PetSizePreset.nearest(to: petScale)
+        ))
+
         menu.addItem(.separator())
 
         let permission = NSMenuItem(title: "授权跳转（辅助功能）…", action: #selector(menuPermission), keyEquivalent: "")
@@ -786,6 +831,11 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     @objc private func menuToggleCard() { toggleCard() }
     @objc private func menuTogglePause() { togglePause() }
     @objc private func menuToggleSound() { toggleSound() }
+    @objc private func menuSelectSize(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let preset = PetSizePreset(rawValue: raw) else { return }
+        setPetScale(preset.scale)
+    }
     @objc private func menuPermission() { requestJumpPermission() }
     @objc private func menuReset() { resetPosition() }
     @objc private func menuHidePet() { togglePetVisibility() }
