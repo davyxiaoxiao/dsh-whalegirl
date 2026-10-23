@@ -324,6 +324,172 @@ private final class CardBackgroundView: NSView {
     }
 }
 
+// MARK: - Update pill
+
+private final class UpdatePillView: NSView {
+    enum Style: Equatable {
+        case available(String)
+        case downloading(String, Double)
+        case ready(String)
+    }
+
+    var onTap: (() -> Void)?
+    private var style: Style?
+    private var hovered = false
+    private var tracking: NSTrackingArea?
+
+    override var isOpaque: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func update(_ style: Style?) {
+        self.style = style
+        if style == nil {
+            if hovered { NSCursor.arrow.set() }
+            hovered = false
+            toolTip = nil
+        } else {
+            toolTip = tooltip(for: style!)
+        }
+        isHidden = style == nil
+        needsDisplay = true
+    }
+
+    private func tooltip(for style: Style) -> String {
+        switch style {
+        case .available(let version): return "发现新版本 \(version)，点击下载并安装"
+        case .downloading(let version, _): return "正在下载 \(version)…"
+        case .ready: return "安装包已下载，点击打开"
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard style != nil else { return }
+        hovered = true
+        NSCursor.pointingHand.push()
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard hovered else { return }
+        hovered = false
+        NSCursor.pop()
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard style != nil else { return }
+        onTap?()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let style else { return }
+        let accent: NSColor
+        let text: String
+        let symbol: String
+        var progress: Double?
+        switch style {
+        case .available(let version):
+            accent = Theme.amber
+            text = "可更新 \(version)"
+            symbol = "arrow.up.circle.fill"
+        case .downloading(let version, let value):
+            accent = Theme.amber
+            text = "下载中 \(Int(value * 100))%"
+            symbol = "arrow.down.circle.fill"
+            progress = value
+            _ = version
+        case .ready:
+            accent = Theme.green
+            text = "打开安装包"
+            symbol = "shippingbox.fill"
+        }
+
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2)
+        accent.withAlphaComponent(hovered ? 0.26 : 0.14).setFill()
+        path.fill()
+        accent.withAlphaComponent(hovered ? 0.85 : 0.55).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+
+        if let progress {
+            let width = max(0, min(1, progress)) * (rect.width - 2)
+            if width > 2 {
+                NSGraphicsContext.saveGraphicsState()
+                path.addClip()
+                accent.withAlphaComponent(0.18).setFill()
+                NSRect(x: rect.minX + 1, y: rect.minY + 1, width: width, height: rect.height - 2).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+
+        let icon = tintedSymbol(symbol, color: accent)
+        let iconWidth = icon?.size.width ?? 0
+        let gap: CGFloat = iconWidth > 0 ? 4 : 0
+        let font = Theme.rounded(9.5, .semibold)
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: accent
+        ]
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.alignment = .left
+        attrs[.paragraphStyle] = paragraph
+        let textWidth = min(
+            (text as NSString).size(withAttributes: attrs).width,
+            bounds.width - 18 - iconWidth - gap
+        )
+        let total = iconWidth + gap + textWidth
+        let startX = max(8, (bounds.width - total) / 2)
+        if let icon {
+            icon.draw(
+                in: NSRect(
+                    x: startX,
+                    y: (bounds.height - icon.size.height) / 2,
+                    width: icon.size.width,
+                    height: icon.size.height
+                )
+            )
+        }
+        (text as NSString).draw(
+            in: NSRect(
+                x: startX + iconWidth + gap,
+                y: (bounds.height - 13) / 2,
+                width: max(0, textWidth + 1),
+                height: 13
+            ),
+            withAttributes: attrs
+        )
+    }
+
+    private func tintedSymbol(_ name: String, color: NSColor) -> NSImage? {
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 9.5, weight: .semibold)) else { return nil }
+        let image = NSImage(size: symbol.size)
+        image.lockFocus()
+        symbol.draw(in: NSRect(origin: .zero, size: symbol.size))
+        color.setFill()
+        NSRect(origin: .zero, size: symbol.size).fill(using: .sourceAtop)
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+}
+
 // MARK: - Card
 
 final class StatusCardController: NSObject {
@@ -344,15 +510,18 @@ final class StatusCardController: NSObject {
     private let listView = SessionListView(frame: .zero)
     private let footerLabel = NSTextField(labelWithString: "仅读取 ~/.dsh/sessions · 每 1.5s 刷新")
     private let revealButton = NSButton(frame: .zero)
+    private let updatePill = UpdatePillView(frame: .zero)
 
     private var status = DSHStatus()
     private var currentSessions: [SessionSnapshot] = []
     private var isVisible = false
+    private var updateState: PetUpdateState = .idle
 
     var onClose: (() -> Void)?
     var onRefresh: (() -> Void)?
     var onReveal: ((String) -> Void)?
     var onOpenSession: ((SessionSnapshot) -> Void)?
+    var onUpdate: (() -> Void)?
 
     final class CardPanel: NSPanel {
         override var canBecomeKey: Bool { true }
@@ -400,12 +569,12 @@ final class StatusCardController: NSObject {
         iconView.contentTintColor = Theme.cyan
         iconBox.addSubview(iconView)
 
-        titleLabel.frame = NSRect(x: 74, y: 472, width: 240, height: 22)
+        titleLabel.frame = NSRect(x: 74, y: 472, width: 144, height: 22)
         titleLabel.font = Theme.rounded(17, .bold)
         titleLabel.textColor = .white
         root.addSubview(titleLabel)
 
-        subtitleLabel.frame = NSRect(x: 75, y: 454, width: 250, height: 15)
+        subtitleLabel.frame = NSRect(x: 75, y: 454, width: 148, height: 15)
         subtitleLabel.font = Theme.rounded(10, .regular)
         subtitleLabel.textColor = Theme.muted
         root.addSubview(subtitleLabel)
@@ -419,6 +588,11 @@ final class StatusCardController: NSObject {
         closeButton.target = self
         closeButton.action = #selector(closeTapped)
         root.addSubview(closeButton)
+
+        updatePill.frame = NSRect(x: 224, y: 466, width: 114, height: 24)
+        updatePill.isHidden = true
+        updatePill.onTap = { [weak self] in self?.onUpdate?() }
+        root.addSubview(updatePill)
 
         workTile.frame = NSRect(x: 20, y: 374, width: 113, height: 62)
         waitTile.frame = NSRect(x: 139, y: 374, width: 113, height: 62)
@@ -515,6 +689,21 @@ final class StatusCardController: NSObject {
         currentSessions = visible
         footerLabel.stringValue = "点击会话跳到 DSH · 仅读取 ~/.dsh"
         if isVisible { layoutList() }
+    }
+
+    /// Called by the update checker; the pill is the only visible surface.
+    func updateUpdateState(_ state: PetUpdateState) {
+        updateState = state
+        switch state {
+        case .available(let release):
+            updatePill.update(.available("v\(release.version)"))
+        case .downloading(let version, let progress):
+            updatePill.update(.downloading("v\(version)", progress))
+        case .ready(let version, _):
+            updatePill.update(.ready("v\(version)"))
+        default:
+            updatePill.update(nil)
+        }
     }
 
     func show(relativeTo petFrame: NSRect) {

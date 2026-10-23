@@ -28,6 +28,9 @@ enum SnapshotRunner {
         let cardController = StatusCardController()
         card = cardController
         cardController.update(mockStatus())
+        if let fake = UpdateChecker.fakeVersion() {
+            cardController.updateUpdateState(.available(.fake(version: fake)))
+        }
         cardController.show(relativeTo: NSRect(x: 100, y: 100, width: size.width, height: size.height))
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {

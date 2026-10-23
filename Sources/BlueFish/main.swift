@@ -3,6 +3,20 @@ import Foundation
 
 let arguments = CommandLine.arguments
 
+if arguments.contains("--check-update") {
+    var finished = false
+    UpdateChecker.diagnose { line in
+        print(line)
+        finished = true
+    }
+    let deadline = Date().addingTimeInterval(15)
+    while !finished, Date() < deadline {
+        _ = RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    }
+    if !finished { print("error=timeout") }
+    exit(0)
+}
+
 if arguments.contains("--dump") {
     var config = DSHMonitor.Config()
     config.log = { text in

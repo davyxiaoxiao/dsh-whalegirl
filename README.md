@@ -14,6 +14,7 @@
 
 - **常驻桌面**：无边框、透明、置顶，所有 Space 可见；透明区域鼠标穿透，不会挡住正常点击。
 - **可调大小**：右键宠物 →「宠物大小」，或点菜单栏小鱼的菜单 →「宠物大小」，四档：迷你 60% / 小 75% / 标准 100% / 大 120%。窗口会跟着立绘一起伸缩，状态条和气泡始终贴在宠物头顶，选择会自动保存。
+- **自动更新**：启动时和每 6 小时查一次 GitHub Release；有新版本时任务面板右上角出现琥珀色「可更新 vX」，点一下自动下载安装包（校验 SHA256）并打开 macOS 安装器，装完重新打开鲸鱼娘就是新版。
 - **任务看板**：点一下宠物打开「深海任务台」，看每个会话在做什么、跑了多久、什么时候完成、今天花了多少钱。
 - **跳到 DSH 会话**：点任务行会激活 DSH 桌面版，并在它的侧栏里找到对应会话点开（通过 macOS 辅助功能 API）。首次使用需要在「系统设置 → 隐私与安全性 → 辅助功能」里勾选鲸鱼娘；没授权时会退化成「把会话名复制到剪贴板 + 把 DSH 切到前台」。
 - **状态立绘**：待命 / 干饭（吃白饭）/ 等你确认 / 出错 / 完成 / 睡觉 / **DSH 断连**，共 7 种状态。
@@ -27,8 +28,8 @@
   - 有任务需要你确认：琥珀色气泡常驻 + 提示音；
   - 任务完成：开心跳一下 + 气泡 + 音效；
   - 任务失败：惊慌表情 + 抖动 + 气泡。
-- **菜单栏小鱼**：带状态色点；菜单里有暂停监控、提示音开关、回到右下角、隐藏桌宠、退出。
-- **只读本地**：只读取 `~/.dsh/sessions` 和 `~/.dsh/storages/cost-meter`，不联网，不改 DSH 配置。
+- **菜单栏小鱼**：带状态色点；菜单里有暂停监控、提示音开关、宠物大小、检查更新、回到右下角、隐藏桌宠、退出。
+- **只读本地**：只读取 `~/.dsh/sessions` 和 `~/.dsh/storages/cost-meter`，不改 DSH 配置；只在检查更新时访问 GitHub 的公开 Release。
 
 ## 运行
 
@@ -64,7 +65,9 @@ open /Applications/WhaleGirl.app
 | 双击宠物 | 咕噜咕噜～随机互动 |
 | 右键宠物 | 快捷菜单（任务面板、暂停、提示音、宠物大小、重置位置、退出） |
 | 右键宠物 → 宠物大小 | 迷你 60% / 小 75% / 标准 100% / 大 120%，立即生效并记住 |
-| 菜单栏小鱼 | 状态摘要、最近任务、暂停监控、提示音、宠物大小、重置位置、退出 |
+| 点面板右上角「可更新」 | 自动下载新版 pkg、校验 SHA256，并打开 macOS 安装器 |
+| 菜单栏小鱼 / 右键宠物 → 检查更新 | 手动查一次 GitHub Release（没网或限流会提示） |
+| 菜单栏小鱼 | 状态摘要、最近任务、暂停监控、提示音、宠物大小、检查更新、重置位置、退出 |
 | 点击任务行 | 跳到 DSH 桌面版里对应的会话 |
 | 右键任务行 | 跳到 DSH 会话 / 在 Finder 中打开工作区 / 复制会话 ID / 复制日志路径 |
 | 右键宠物 → 授权跳转 | 打开辅助功能授权提示和系统设置面板 |
@@ -156,8 +159,9 @@ Assets/pet_walk_c.png  拖动走路 · 朝右 · 左脚在前
 
 ```text
 Sources/BlueFish/
-  main.swift               入口 / --dump 诊断
+  main.swift               入口 / --dump / --check-update 诊断
   AppDelegate.swift        启动与快照模式
+  UpdateChecker.swift      GitHub Release 检查、下载、SHA256 校验、更新菜单/面板状态
   DSHMonitor.swift         会话日志扫描、zstd 尾解压、状态机
   Models.swift             会话/全局状态模型
   PetWindowController.swift 桌宠窗口、气泡、菜单栏联动
@@ -197,14 +201,25 @@ scripts/make_preview.py    README 海报
 
 # 用指定大小离屏渲染（0.6 = 迷你，1.2 = 大），检查小/大尺寸下的布局
 ./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --snapshot /tmp/wg-small --scale 0.6
+
+# 查一次更新（打印当前版本 / 最新 tag / 资产 / SHA256，不开面板）
+./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --check-update
+
+# 渲染「可更新」面板（假版本号，方便看 UI）
+./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --snapshot /tmp/wg-update --fake-update 9.9.9
+
+# 让运行中的鲸鱼娘立即检查 / 执行更新（脚本、快捷指令）
+open bluefish://check-update
+open bluefish://update
 ```
 
 ## 隐私
 
-- 全程离线，没有任何网络请求。
+- 平时完全离线；只有检查更新时会请求 GitHub 的公开 Release（API 优先，限流时退回 Release 页面），只带版本号做 User-Agent，不发送任何本地数据。
+- 更新包只从本仓库的 Release 下载，并用 Release 提供的 SHA256 校验；校验失败不会打开安装器。
 - 只读 `~/.dsh/sessions`、`~/.dsh/storages/workspace.json` 和 `~/.dsh/storages/cost-meter/ledger.json`。
 - 不读写 DSH 的会话内容以外的数据，不上传任何东西。
-- 自身只在 `~/Library/Preferences/com.daiwei.bluefish.plist` 存位置、提示音开关和宠物大小。
+- 自身只在 `~/Library/Preferences/com.daiwei.bluefish.plist` 存位置、提示音开关、宠物大小和上次检查更新的时间。
 
 ## 已知取舍
 
@@ -212,6 +227,7 @@ scripts/make_preview.py    README 海报
 - 没有系统通知中心推送，只有气泡 + 音效 + 菜单栏色点；如果桌宠被隐藏，瞬间提示会错过。
 - 「跳到 DSH 会话」依赖辅助功能权限和 DSH 侧栏里的会话名匹配；侧栏收起、会话名被改过或 DSH 没开时会退化成复制会话名。每次重新构建 App 后 ad-hoc 签名会变，可能需要在辅助功能里重新勾选一次。
 - 本地 ad-hoc 签名；拷到另一台 Mac 首次打开可能需要右键 → 打开。
+- 自动更新依赖 GitHub Release；安装新版要经过 macOS 安装器（pkg 需要管理员密码），App 不会静默替换自己。如果 GitHub 在共享出口 IP 上触发 API 限流，会退回解析 Release 页面，仍然能检查到新版。
 - 角色是 DeepSeek 同人二创，仅作个人桌面装饰使用。
 
 ## 后续可以加

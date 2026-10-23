@@ -16,6 +16,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onOpenSession: ((SessionSnapshot) -> Void)?
     var currentSize: (() -> PetSizePreset)?
     var onSelectSize: ((PetSizePreset) -> Void)?
+    var updateVersion: (() -> String?)?
+    var onCheckUpdate: (() -> Void)?
     var isPetVisible: (() -> Bool)?
     var isCardVisible: (() -> Bool)?
 
@@ -136,6 +138,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             selected: currentSize?() ?? .standard
         ))
 
+        let updateTitle = updateVersion?().map { "可更新 v\($0)…" } ?? "检查更新…"
+        menu.addItem(actionItem(updateTitle, action: #selector(checkUpdate), key: ""))
+
         if !recentSessions.isEmpty {
             menu.addItem(.separator())
             let section = NSMenuItem(title: "最近任务", action: nil, keyEquivalent: "")
@@ -185,6 +190,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleSound() { onToggleSound?() }
     @objc private func resetPosition() { onResetPosition?() }
     @objc private func quit() { onQuit?() }
+    @objc private func checkUpdate() { onCheckUpdate?() }
     @objc private func selectSize(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let preset = PetSizePreset(rawValue: raw) else { return }

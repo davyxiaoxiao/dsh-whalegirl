@@ -8,6 +8,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     private let stage: PetStageView
     private let menuBar: MenuBarController
     private let controlServer = PetControlServer()
+    private let updater = UpdateChecker()
 
     private var status = DSHStatus()
     private var hasLoaded = false
@@ -27,6 +28,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     private var lastChatterAt: Date = .distantPast
     private var tickTimer: Timer?
     private var clickThroughTimer: Timer?
+    private var manualUpdateCheck = false
 
     private let defaults = UserDefaults.standard
     private static let originKey = "BlueFish.petOrigin"
@@ -77,6 +79,20 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         card.onOpenSession = { [weak self] session in
             self?.jumpToSession(session)
         }
+        card.onUpdate = { [weak self] in
+            self?.updater.performUpdate()
+        }
+        updater.onStateChange = { [weak self] state in
+            self?.handleUpdateState(state)
+        }
+        updater.onError = { [weak self] message in
+            self?.showBubble(
+                title: "更新下载失败",
+                detail: message,
+                autoHide: 6,
+                accent: Theme.red
+            )
+        }
 
         menuBar.onToggleCard = { [weak self] in self?.toggleCard() }
         menuBar.onTogglePet = { [weak self] in self?.togglePetVisibility() }
@@ -93,6 +109,13 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         }
         menuBar.onSelectSize = { [weak self] preset in
             self?.setPetScale(preset.scale)
+        }
+        menuBar.onCheckUpdate = { [weak self] in
+            self?.checkForUpdates()
+        }
+        menuBar.updateVersion = { [weak self] in
+            guard let self, case .available(let release) = self.updater.state else { return nil }
+            return release.version
         }
         menuBar.isPetVisible = { [weak self] in self?.panel.isVisible ?? false }
         menuBar.isCardVisible = { [weak self] in self?.card.visible ?? false }
@@ -114,6 +137,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         windowReady()
         panel.orderFrontRegardless()
         monitor.start()
+        updater.start()
         writeState()
         controlServer.statusProvider = { [weak self] in self?.panel.isVisible ?? false }
         controlServer.actionHandler = { [weak self] action in self?.handleControl(action) }
@@ -174,6 +198,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         tickTimer?.invalidate()
         monitor.stop()
         clickThroughTimer?.invalidate()
+        updater.stop()
     }
 
     /// The pet window is mostly transparent; let clicks fall through unless the
@@ -292,6 +317,8 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         case "recenter": resetPosition()
         case "axdump": DSHFocus.dumpAXTree()
         case "size": applySizeURL(url)
+        case "check-update": checkForUpdates()
+        case "update": updater.performUpdate()
         default: break
         }
     }
@@ -767,6 +794,74 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         DebugLog.write("pet size=\(target) frame=\(panel.frame)")
     }
 
+    private var updateMenuTitle: String {
+        if case .available(let release) = updater.state {
+            return "可更新 v\(release.version)…"
+        }
+        return "检查更新…"
+    }
+
+    private func checkForUpdates() {
+        if case .available(let release) = updater.state {
+            if !card.visible {
+                card.update(status)
+                card.show(relativeTo: panel.frame)
+            }
+            showBubble(
+                title: "发现新版本 v\(release.version)",
+                detail: "在任务面板点「可更新」就能安装",
+                autoHide: 7,
+                accent: Theme.amber
+            )
+            return
+        }
+        if case .downloading = updater.state { return }
+        manualUpdateCheck = true
+        updater.check(force: true)
+    }
+
+    private func handleUpdateState(_ state: PetUpdateState) {
+        card.updateUpdateState(state)
+        switch state {
+        case .upToDate(let version):
+            guard manualUpdateCheck else { return }
+            manualUpdateCheck = false
+            showBubble(
+                title: "已是最新版本",
+                detail: "v\(version) · 海底没有新东西",
+                autoHide: 4,
+                accent: Theme.green
+            )
+        case .available(let release):
+            guard manualUpdateCheck else { return }
+            manualUpdateCheck = false
+            if !card.visible {
+                card.update(status)
+                card.show(relativeTo: panel.frame)
+            }
+            showBubble(
+                title: "发现新版本 v\(release.version)",
+                detail: "在任务面板点「可更新」就能安装",
+                autoHide: 8,
+                accent: Theme.amber
+            )
+        case .failed(let message):
+            guard manualUpdateCheck else { return }
+            manualUpdateCheck = false
+            showBubble(title: "检查更新失败", detail: message, autoHide: 6, accent: Theme.red)
+        case .ready(let version, _):
+            manualUpdateCheck = false
+            showBubble(
+                title: "v\(version) 安装包已就绪",
+                detail: "按安装器提示安装 · 装完重新打开鲸鱼娘",
+                autoHide: 10,
+                accent: Theme.green
+            )
+        default:
+            break
+        }
+    }
+
     private func reactToPoke() {
         lastInteractionAt = Date()
         transientMood = .happy
@@ -806,6 +901,10 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             selected: PetSizePreset.nearest(to: petScale)
         ))
 
+        let updateItem = NSMenuItem(title: updateMenuTitle, action: #selector(menuCheckUpdate), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         menu.addItem(.separator())
 
         let permission = NSMenuItem(title: "授权跳转（辅助功能）…", action: #selector(menuPermission), keyEquivalent: "")
@@ -836,6 +935,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
               let preset = PetSizePreset(rawValue: raw) else { return }
         setPetScale(preset.scale)
     }
+    @objc private func menuCheckUpdate() { checkForUpdates() }
     @objc private func menuPermission() { requestJumpPermission() }
     @objc private func menuReset() { resetPosition() }
     @objc private func menuHidePet() { togglePetVisibility() }
