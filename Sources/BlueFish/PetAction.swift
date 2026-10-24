@@ -42,7 +42,9 @@ struct PetAction {
                              swayAngle: 0.014, swayDuration: 4.2,
                              badge: .none, particles: .slowBubbles, showsZzz: false, mood: .idle)
         case .working:
-            return PetAction(id: "work", frames: ["pet_work"], frameInterval: 0, scale: 0.85,
+            // Three-frame chew loop: mouth, chopsticks and tail each move a bit.
+            return PetAction(id: "work", frames: ["pet_work", "pet_work_b", "pet_work_c"],
+                             frameInterval: 0.22, scale: 0.85,
                              bobAmplitude: 3.5, bobDuration: 1.45,
                              swayAngle: 0.020, swayDuration: 2.4,
                              badge: .none, particles: .fastBubbles, showsZzz: false, mood: .working)
@@ -52,7 +54,10 @@ struct PetAction {
                              swayAngle: 0.014, swayDuration: 4.2,
                              badge: .alert, particles: .none, showsZzz: false, mood: .waiting)
         case .happy:
-            return PetAction(id: "happy", frames: ["pet_happy"], frameInterval: 0, scale: 1,
+            // Task finished: hands on hips, gloating. Two frames so she can
+            // sway and show off instead of standing still.
+            return PetAction(id: "happy", frames: ["pet_smug_a", "pet_smug_b"],
+                             frameInterval: 0.55, scale: 1,
                              bobAmplitude: 6, bobDuration: 1.1,
                              swayAngle: 0.014, swayDuration: 4.2,
                              badge: .none, particles: .sparkles, showsZzz: false, mood: .happy)
@@ -74,6 +79,72 @@ struct PetAction {
                              opacity: 0.72)
         }
     }
+
+    /// Dangling in the air while the user carries her, grabbed by the scruff.
+    /// Two frames: arms hanging, then arms flailing in protest.
+    static let held = PetAction(
+        id: "held",
+        frames: ["pet_held_a", "pet_held_b"],
+        frameInterval: 0.26,
+        scale: 1.0,
+        bobAmplitude: 0,
+        bobDuration: 1.0,
+        swayAngle: 0,
+        swayDuration: 1.0,
+        badge: .none,
+        particles: .slowBubbles,
+        showsZzz: false,
+        mood: .idle
+    )
+
+    /// Mid-air poses while she falls — two frames loop so the hang time reads
+    /// as motion instead of a frozen still.
+    static let falling = PetAction(
+        id: "falling",
+        frames: ["pet_fall", "pet_fall_b"],
+        frameInterval: 0.15,
+        scale: 1.0,
+        bobAmplitude: 0,
+        bobDuration: 1.0,
+        swayAngle: 0,
+        swayDuration: 1.0,
+        badge: .none,
+        particles: .none,
+        showsZzz: false,
+        mood: .idle
+    )
+
+    /// Landed on her back, dizzy — the "摔了一跤" beat.
+    static let down = PetAction(
+        id: "down",
+        frames: ["pet_down"],
+        frameInterval: 0,
+        scale: 1.0,
+        bobAmplitude: 0,
+        bobDuration: 1.0,
+        swayAngle: 0,
+        swayDuration: 1.0,
+        badge: .none,
+        particles: .none,
+        showsZzz: false,
+        mood: .idle
+    )
+
+    /// Pushing herself back up off the floor.
+    static let getUp = PetAction(
+        id: "getup",
+        frames: ["pet_getup"],
+        frameInterval: 0,
+        scale: 1.0,
+        bobAmplitude: 0,
+        bobDuration: 1.0,
+        swayAngle: 0,
+        swayDuration: 1.0,
+        badge: .none,
+        particles: .none,
+        showsZzz: false,
+        mood: .idle
+    )
 
     /// Three-frame drag walk: contact left / passing / contact right.
     static let walk = PetAction(
@@ -130,6 +201,13 @@ final class PetActionManager {
         guard isWalking else { return }
         isWalking = false
         play(PetAction.mood(pendingMood), animated: false)
+    }
+
+    /// Play an action that is not tied to a mood (being carried, falling, …).
+    /// Mood updates that arrive meanwhile are deferred by `PetSpriteView`.
+    func force(_ action: PetAction, animated: Bool = false) {
+        isWalking = false
+        play(action, animated: animated)
     }
 
     private func play(_ action: PetAction, animated: Bool, tintMood: PetMood? = nil) {

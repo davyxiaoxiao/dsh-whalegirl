@@ -306,6 +306,10 @@ final class PetSpriteView: NSView {
     private let floatLayer = CALayer()
     private let leanLayer = CALayer()
     private let swayLayer = CALayer()
+    /// Dedicated layer for the "being carried / falling / landing" transforms.
+    /// Keeping it separate from the bob, lean and sway layers means those idle
+    /// animations never fight with the physics pose.
+    private let bodyLayer = CALayer()
     private let imageLayer = CALayer()
     private let bubbleEmitter = CAEmitterLayer()
     private let sparkleEmitter = CAEmitterLayer()
@@ -322,6 +326,22 @@ final class PetSpriteView: NSView {
     private var swayAngle: CGFloat = 0.014
     private var swayDuration: TimeInterval = 4.2
     private lazy var actionManager = PetActionManager(sprite: self)
+
+    /// What the body is doing while the user interacts with her. While this is
+    /// anything but `.normal` mood updates are parked in `deferredMood`.
+    enum BodyPhase {
+        case normal
+        case held
+        case falling
+        case landed
+    }
+
+    private(set) var bodyPhase: BodyPhase = .normal
+    private var deferredMood: PetMood?
+    private var settleWork: DispatchWorkItem?
+
+    /// Dragged, in the air, or still on the floor after a tumble.
+    var isBodyBusy: Bool { bodyPhase != .normal }
 
     private(set) var imageRect: NSRect = .zero
 
@@ -382,6 +402,11 @@ final class PetSpriteView: NSView {
         swayLayer.position = CGPoint(x: 110, y: 0)
         leanLayer.addSublayer(swayLayer)
 
+        bodyLayer.anchorPoint = CGPoint(x: 0.5, y: 0)
+        bodyLayer.bounds = CGRect(x: 0, y: 0, width: 220, height: 230)
+        bodyLayer.position = CGPoint(x: 110, y: 0)
+        swayLayer.addSublayer(bodyLayer)
+
         imageLayer.contentsGravity = .resizeAspect
         imageLayer.magnificationFilter = .trilinear
         imageLayer.minificationFilter = .trilinear
@@ -389,7 +414,7 @@ final class PetSpriteView: NSView {
         imageLayer.shadowOpacity = 0.30
         imageLayer.shadowRadius = 9
         imageLayer.shadowOffset = CGSize(width: 0, height: -2)
-        swayLayer.addSublayer(imageLayer)
+        bodyLayer.addSublayer(imageLayer)
 
         bubbleEmitter.emitterShape = .line
         bubbleEmitter.emitterMode = .surface
@@ -463,6 +488,7 @@ final class PetSpriteView: NSView {
         floatLayer.actions = noImplicit
         leanLayer.actions = noImplicit
         swayLayer.actions = noImplicit
+        bodyLayer.actions = noImplicit
     }
 
     private func layoutSprite(scale requestedScale: CGFloat? = nil) {
@@ -478,6 +504,8 @@ final class PetSpriteView: NSView {
         leanLayer.position = CGPoint(x: width / 2, y: 0)
         swayLayer.bounds = CGRect(x: 0, y: 0, width: width, height: height)
         swayLayer.position = CGPoint(x: width / 2, y: 0)
+        bodyLayer.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        bodyLayer.position = CGPoint(x: width / 2, y: 0)
         imageLayer.frame = CGRect(x: 0, y: 0, width: width, height: height)
         imageRect = NSRect(x: (bounds.width - width) / 2, y: 18, width: width, height: height)
         if let cg = SpriteArt.cgImage(image) {
@@ -514,10 +542,17 @@ final class PetSpriteView: NSView {
     // MARK: - Action rendering (driven by PetActionManager)
 
     func setMood(_ mood: PetMood, animated: Bool) {
+        // Being carried / falling / lying on the floor owns the body for now;
+        // remember the mood and apply it when she stands up again.
+        if isBodyBusy {
+            deferredMood = mood
+            return
+        }
         actionManager.setMood(mood, animated: animated)
     }
 
     func startWalking() {
+        guard !isBodyBusy else { return }
         actionManager.startWalking()
     }
 
@@ -569,6 +604,186 @@ final class PetSpriteView: NSView {
         CATransaction.commit()
     }
 
+    // MARK: - Carried / falling / landing
+
+    /// Picked up by the cursor: she switches to the scruff-lift pose (feet off
+    /// the ground, back arched), dangles and flails a little.
+    func beginHeld() {
+        guard bodyPhase != .held else { return }
+        if deferredMood == nil { deferredMood = currentMood }
+        cancelSettleWork()
+        bodyPhase = .held
+        bodyLayer.removeAllAnimations()
+        actionManager.force(PetAction.held, animated: true)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        leanLayer.transform = CATransform3DIdentity
+        contactShadow.opacity = 0.10
+        glowLayer.opacity = 0.10
+        CATransaction.commit()
+
+        // Small pendulum on top of the two flail frames.
+        let dangle = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+        dangle.values = [0.10, 0.02, -0.09, 0.02, 0.10]
+        dangle.keyTimes = [0, 0.28, 0.55, 0.8, 1]
+        dangle.duration = 1.6
+        dangle.repeatCount = .infinity
+        dangle.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        bodyLayer.add(dangle, forKey: "dangle")
+    }
+
+    /// Lean her into the direction she is being swung, and turn her head that way.
+    func updateHeld(dx: CGFloat, dy: CGFloat = 0) {
+        guard bodyPhase == .held else { return }
+        if dx > 24, walkFacingLeft {
+            walkFacingLeft = false
+            setFacing(mirrored: false)
+        } else if dx < -24, !walkFacingLeft {
+            walkFacingLeft = true
+            setFacing(mirrored: true)
+        }
+        let bias = max(-0.11, min(0.11, dx * 0.0004 + dy * 0.0001))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        leanLayer.transform = CATransform3DMakeRotation(bias, 0, 0, 1)
+        CATransaction.commit()
+    }
+
+    /// Released: the mid-air falling pose, no floor shadow.
+    func beginFalling() {
+        guard bodyPhase == .held || bodyPhase == .normal else { return }
+        if deferredMood == nil { deferredMood = currentMood }
+        cancelSettleWork()
+        bodyPhase = .falling
+        bodyLayer.removeAllAnimations()
+        actionManager.force(PetAction.falling, animated: true)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        leanLayer.transform = CATransform3DIdentity
+        contactShadow.opacity = 0.03
+        glowLayer.opacity = 0.08
+        CATransaction.commit()
+
+        // The window does not move, so sell the drop inside her own anchor:
+        // a short float (cartoon hang), then a fast fall into place.
+        let baseY = bodyLayer.transform.m42
+        let drop = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        drop.values = [baseY + 30 * sizeScale, baseY + 42 * sizeScale,
+                       baseY + 36 * sizeScale, baseY]
+        drop.keyTimes = [0, 0.45, 0.62, 1]
+        drop.duration = 0.85
+        drop.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeIn)
+        ]
+        bodyLayer.add(drop, forKey: "airdrop")
+    }
+
+    /// Impact: switch to the dizzy "flipped turtle" pose, squash, then push
+    /// herself up after a beat.
+    func land(intensity: CGFloat) {
+        guard bodyPhase == .falling || bodyPhase == .held else { return }
+        bodyPhase = .landed
+        bodyLayer.removeAllAnimations()
+        let k = max(0.4, min(1.15, intensity))
+        actionManager.force(PetAction.down, animated: false)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bodyLayer.transform = CATransform3DIdentity
+        contactShadow.opacity = 0.34
+        glowLayer.opacity = 0.14
+        CATransaction.commit()
+
+        let squashX = CAKeyframeAnimation(keyPath: "transform.scale.x")
+        squashX.values = [1.0, 1 + 0.12 * k, 1 - 0.03 * k, 1 + 0.02 * k, 1.0]
+        squashX.keyTimes = [0, 0.14, 0.44, 0.7, 1]
+        squashX.duration = 0.55
+        squashX.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        bodyLayer.add(squashX, forKey: "land.squash.x")
+
+        let squashY = CAKeyframeAnimation(keyPath: "transform.scale.y")
+        squashY.values = [1.0, 1 - 0.14 * k, 1 + 0.04 * k, 1 - 0.02 * k, 1.0]
+        squashY.keyTimes = [0, 0.14, 0.44, 0.7, 1]
+        squashY.duration = 0.55
+        squashY.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        bodyLayer.add(squashY, forKey: "land.squash.y")
+
+        let wobble = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+        wobble.values = [0, -0.10, 0.07, -0.04, 0]
+        wobble.keyTimes = [0, 0.18, 0.42, 0.68, 1]
+        wobble.duration = 0.7
+        wobble.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        bodyLayer.add(wobble, forKey: "land.wobble")
+
+        if k > 0.7 { playShake() }
+
+        // Dizzy for a beat, then "爬起来".
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.bodyPhase == .landed else { return }
+            self.actionManager.force(PetAction.getUp, animated: false)
+        }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
+    }
+
+    /// Back on her feet: clear the physics transforms and hand the body back to
+    /// whatever mood the controller wanted in the meantime.
+    func standUp() {
+        guard bodyPhase == .landed || bodyPhase == .falling else { return }
+        settle()
+    }
+
+    /// Hand the body back to the mood system without the tumble. Used on a
+    /// gravity-free release (she stays where she was put) and after standing up.
+    func settle() {
+        guard bodyPhase != .normal else { return }
+        cancelSettleWork()
+        bodyPhase = .normal
+        let from = bodyLayer.transform
+        bodyLayer.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bodyLayer.transform = CATransform3DIdentity
+        leanLayer.transform = CATransform3DIdentity
+        contactShadow.opacity = 0.30
+        glowLayer.opacity = 0.16
+        CATransaction.commit()
+        // Slide back to the ground anchor instead of snapping there.
+        let ease = CABasicAnimation(keyPath: "transform")
+        ease.fromValue = NSValue(caTransform3D: from)
+        ease.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        ease.duration = 0.22
+        ease.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        bodyLayer.add(ease, forKey: "settle.transform")
+        walkFacingLeft = false
+        walkLean = 0
+        let mood = deferredMood ?? .idle
+        deferredMood = nil
+        actionManager.force(PetAction.mood(mood), animated: true)
+        bounce()
+    }
+
+    /// Keep the drawn body where it was across a pose swap (the pose canvases
+    /// have different aspect ratios, so their centres sit at different heights).
+    private func keepVisualAnchor(from previousRect: NSRect) {
+        guard previousRect.height > 1, imageRect.height > 1 else { return }
+        let dy = previousRect.midY - imageRect.midY
+        guard abs(dy) > 0.5 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bodyLayer.transform = CATransform3DTranslate(bodyLayer.transform, 0, dy, 0)
+        CATransaction.commit()
+    }
+
+    private func cancelSettleWork() {
+        settleWork?.cancel()
+        settleWork = nil
+    }
+
     /// Configure the sprite for a new action: frames, motion, badge, particles.
     func applyAction(_ action: PetAction, tintMood: PetMood, animated: Bool) {
         currentMood = tintMood
@@ -582,9 +797,13 @@ final class PetSpriteView: NSView {
             transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
             imageLayer.add(transition, forKey: "contents")
         }
+        let previousRect = imageRect
         currentImageName = first
         currentScale = action.scale
         layoutSprite(scale: action.scale)
+        // Airborne / on the floor the pose changes but her body must stay put
+        // inside the window instead of jumping between canvases.
+        if bodyPhase != .normal { keepVisualAnchor(from: previousRect) }
         applyMoodToLayers(tintMood)
         restartAnimations(
             bobAmplitude: action.bobAmplitude,
@@ -848,6 +1067,7 @@ final class PetStageView: NSView {
     var onToggleCard: (() -> Void)?
     var onToggleBubble: (() -> Void)?
     var onDoubleClick: (() -> Void)?
+    var onDragBegan: (() -> Void)?
     var onDragEnded: (() -> Void)?
     var onContextMenu: ((NSEvent) -> Void)?
     private var pendingClick: DispatchWorkItem?
@@ -866,6 +1086,18 @@ final class PetStageView: NSView {
     private var isMouseInside = false
     private var trackingArea: NSTrackingArea?
     private(set) var sizeScale: CGFloat = 1
+
+    /// `true` plays the drop → tumble → get-up animation when she is let go.
+    /// The window itself never moves: she is always put down where the pointer is.
+    var dropTumble = true
+
+    // Dropping: the window stays exactly where the pointer let go — only the
+    // sprite plays the drop / tumble / get-up sequence, in place.
+    private var dropWork: [DispatchWorkItem] = []
+    private var chipSuppressed = false
+
+    /// Dragged, mid-air, or still on the floor: idle wandering must stay away.
+    var isBusy: Bool { isDragging || !dropWork.isEmpty || sprite.isBodyBusy }
 
     override var isFlipped: Bool { false }
     override var isOpaque: Bool { false }
@@ -966,6 +1198,10 @@ final class PetStageView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         if event.type == .rightMouseDown { return }
+        // Grabbing her mid-act interrupts the drop sequence, she gets picked up.
+        cancelDrop()
+        // Touching her ends any idle stroll immediately.
+        onDragBegan?()
         dragStartMouse = NSEvent.mouseLocation
         dragStartOrigin = window?.frame.origin ?? .zero
         dragTarget = nil
@@ -992,14 +1228,17 @@ final class PetStageView: NSView {
         if abs(dx) + abs(dy) > 2 {
             if !didDrag {
                 NSCursor.closedHand.set()
-                sprite.startWalking()
+                // Being carried, not walking: she hangs from the pointer.
+                sprite.beginHeld()
+                chipSuppressed = true
+                hideChip()
                 layoutChip()
             }
             didDrag = true
             isDragging = true
             startMotionTimer()
         }
-        sprite.setWalkDirection(dx: smoothedVelocity.x, dy: smoothedVelocity.y)
+        sprite.updateHeld(dx: smoothedVelocity.x, dy: smoothedVelocity.y)
 
         var target = NSPoint(x: dragStartOrigin.x + dx, y: dragStartOrigin.y + dy)
         if let screen = window.screen ?? NSScreen.main {
@@ -1051,23 +1290,71 @@ final class PetStageView: NSView {
     }
 
     private func finishDrag() {
-        snapToEdge()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.onDragEnded?()
+        onDragEnded?()
+    }
+
+    // MARK: - Dropping
+
+    /// Let go of her: she is placed exactly where the pointer is (no window
+    /// physics), then the sprite acts out the fall, the tumble and getting up.
+    func release(velocity: NSPoint) {
+        cancelDrop()
+        if let target = dragTarget, let window {
+            window.setFrameOrigin(target)
         }
+        dragTarget = nil
+        finishDrag()
+
+        guard dropTumble else {
+            sprite.settle()
+            chipSuppressed = false
+            return
+        }
+        sprite.beginFalling()
+        // Impact speed comes from how fast the pointer was moving when released.
+        let intensity = min(1.15, max(0.45, abs(velocity.y) / 90 + abs(velocity.x) / 200))
+        let impact = DispatchWorkItem { [weak self] in self?.sprite.land(intensity: intensity) }
+        let stand = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.sprite.standUp()
+            self.chipSuppressed = false
+            self.layoutChip()
+            self.dropWork.removeAll()
+        }
+        dropWork = [impact, stand]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85, execute: impact)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.05, execute: stand)
+    }
+
+    private func cancelDrop() {
+        dropWork.forEach { $0.cancel() }
+        dropWork.removeAll()
+    }
+
+    /// Debug helper for `--feel-demo`: pretend the user grabbed her.
+    func demoLift() {
+        sprite.beginHeld()
+        sprite.updateHeld(dx: 180)
+    }
+
+    /// Debug helper for `--feel-demo`: let go from wherever she is.
+    func demoDrop() {
+        release(velocity: NSPoint(x: 0, y: -120))
     }
 
     deinit {
         motionTimer?.invalidate()
+        dropWork.forEach { $0.cancel() }
     }
 
     override func mouseUp(with event: NSEvent) {
         if didDrag {
             isDragging = false
-            sprite.stopWalking()
+            // No more gliding: the fall takes over from where the pointer left her.
+            stopMotionTimer()
+            dragTarget = nil
             layoutChip()
-            // The motion timer keeps gliding to the drop point, then snaps.
-            if motionTimer == nil { finishDrag() }
+            release(velocity: smoothedVelocity)
             return
         }
         if event.clickCount >= 2 {
@@ -1099,25 +1386,13 @@ final class PetStageView: NSView {
         onContextMenu?(event)
     }
 
-    private func snapToEdge() {
-        guard let window, let screen = window.screen ?? NSScreen.main else { return }
-        let visible = screen.visibleFrame
-        var frame = window.frame
-        let margin: CGFloat = 16
-        if abs(frame.minX - visible.minX) < 30 { frame.origin.x = visible.minX + margin }
-        if abs(visible.maxX - frame.maxX) < 30 { frame.origin.x = visible.maxX - frame.width - margin }
-        if abs(frame.minY - visible.minY) < 30 { frame.origin.y = visible.minY + margin }
-        if abs(visible.maxY - frame.maxY) < 30 { frame.origin.y = visible.maxY - frame.height - margin }
-        if frame.origin != window.frame.origin {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.22
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                window.animator().setFrame(frame, display: true)
-            }
-        }
-    }
-
     func showChip(_ text: String, accent: NSColor, pulse: Bool) {
+        // While she is carried / falling the body is drawn off its ground
+        // anchor, so the floating chip would point at the wrong spot.
+        guard !chipSuppressed else {
+            chip.isHidden = true
+            return
+        }
         chip.update(text: text, accent: accent, pulse: pulse)
         chip.isHidden = bubbleVisible || text.isEmpty
         layoutChip()

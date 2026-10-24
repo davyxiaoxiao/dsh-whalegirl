@@ -25,6 +25,8 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     private var bubbleCollapsed = false
     private var paused = false
     private var soundsEnabled = true
+    private var wanderEnabled = true
+    private var dropTumbleEnabled = true
     private var petScale: CGFloat = 1
     private var currentMood: PetMood = .offline
     private var lastPhases: [String: SessionPhase] = [:]
@@ -35,6 +37,18 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     private var tickTimer: Timer?
     private var clickThroughTimer: Timer?
     private var manualUpdateCheck = false
+
+    // Idle "摸鱼" wandering: every so often she strolls left or right on her own.
+    private var wanderTicker: Timer?
+    private var wanderEndsAt: Date?
+    private var wanderDirection: CGFloat = 1
+    private var nextWanderAt = Date().addingTimeInterval(30)
+    private var lastWanderAt: Date = .distantPast
+    /// `--wander-demo` keeps strolling even while a session is running so the
+    /// behaviour can be eyeballed without waiting for a real idle window.
+    private var wanderDemoHold = false
+    private static let wanderSpeed: CGFloat = 54
+    private static let wanderChance = 0.4
 
     private let defaults = UserDefaults.standard
     private static let originKey = "BlueFish.petOrigin"
@@ -70,9 +84,13 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         panel.animationBehavior = .none
 
         soundsEnabled = defaults.object(forKey: "BlueFish.sounds") as? Bool ?? true
+        wanderEnabled = defaults.object(forKey: "BlueFish.wander") as? Bool ?? true
+        dropTumbleEnabled = defaults.object(forKey: "BlueFish.dropTumble") as? Bool ?? true
+        stage.dropTumble = dropTumbleEnabled
 
         stage.onToggleCard = { [weak self] in self?.toggleCard() }
         stage.onToggleBubble = { [weak self] in self?.toggleBubble() }
+        stage.onDragBegan = { [weak self] in self?.stopWander() }
         stage.onDragEnded = { [weak self] in self?.rememberPosition() }
         stage.onContextMenu = { [weak self] event in self?.showContextMenu(event) }
         stage.onDoubleClick = { [weak self] in self?.reactToPoke() }
@@ -176,6 +194,20 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self] in
                 self?.stage.sprite.stopWalking()
+            }
+        }
+        if CommandLine.arguments.contains("--wander-demo") {
+            wanderDemoHold = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.startWander()
+            }
+        }
+        if CommandLine.arguments.contains("--feel-demo") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.stage.demoLift()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.6) { [weak self] in
+                self?.stage.demoDrop()
             }
         }
         if CommandLine.arguments.contains("--open-card") {
@@ -505,6 +537,9 @@ final class PetWindowController: NSObject, NSMenuDelegate {
 
     private func updatePet(force: Bool, announce: Bool) {
         let mood = desiredMood()
+        if mood != .idle, !wanderDemoHold {
+            stopWander()
+        }
         if !hasSetMood || mood != currentMood {
             stage.sprite.setMood(mood, animated: hasLoaded)
             currentMood = mood
@@ -717,7 +752,77 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             updatePet(force: true, announce: false)
         }
         maybeChatter()
+        maybeWander()
     }
+
+    // MARK: - 摸鱼闲逛
+
+    /// Idle only: every few seconds there is a chance she strolls off on her own.
+    private func maybeWander() {
+        guard wanderTicker == nil else { return }
+        guard wanderEnabled, !paused, hasLoaded, currentMood == .idle else { return }
+        guard !stage.isBusy, !stage.isBubbleVisible, !card.visible else { return }
+        guard Date() >= nextWanderAt else { return }
+        nextWanderAt = Date().addingTimeInterval(Double.random(in: 9...20))
+        // Do not wander right after the user put her down somewhere.
+        guard Date().timeIntervalSince(lastWanderAt) > 12 else { return }
+        guard Double.random(in: 0...1) < Self.wanderChance else { return }
+        startWander()
+    }
+
+    private func startWander() {
+        guard wanderTicker == nil, !stage.isBusy else { return }
+        guard let screen = panel.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        guard panel.frame.width < visible.width else { return }
+        wanderDirection = Bool.random() ? 1 : -1
+        wanderEndsAt = Date().addingTimeInterval(Double.random(in: 2.2...4.6))
+        stage.sprite.startWalking()
+        stage.sprite.setWalkDirection(dx: wanderDirection)
+        lastWanderAt = Date()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.stepWander()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        wanderTicker = timer
+    }
+
+    private func stepWander() {
+        guard !paused, !card.visible else {
+            stopWander()
+            return
+        }
+        guard let screen = panel.screen ?? NSScreen.main else {
+            stopWander()
+            return
+        }
+        let dt: CGFloat = 1.0 / 60.0
+        let visible = screen.visibleFrame
+        var frame = panel.frame
+        frame.origin.x += wanderDirection * Self.wanderSpeed * dt
+        if frame.minX < visible.minX + 8 || frame.maxX > visible.maxX - 8 {
+            frame.origin.x = max(visible.minX + 8, min(frame.origin.x, visible.maxX - frame.width - 8))
+            wanderDirection *= -1
+            stage.sprite.setWalkDirection(dx: wanderDirection)
+        }
+        panel.setFrameOrigin(frame.origin)
+        if card.visible { card.reposition(relativeTo: panel.frame) }
+        if let ends = wanderEndsAt, Date() >= ends {
+            stopWander()
+        }
+    }
+
+    /// Stop strolling and settle back into whatever mood is current.
+    private func stopWander() {
+        guard wanderTicker != nil else { return }
+        wanderTicker?.invalidate()
+        wanderTicker = nil
+        wanderEndsAt = nil
+        stage.sprite.stopWalking()
+        rememberPosition()
+    }
+
+    var isWandering: Bool { wanderTicker != nil }
 
     private func maybeChatter() {
         guard !paused, hasLoaded, currentMood == .idle else { return }
@@ -850,6 +955,23 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         menuBar.update(status: status, paused: paused, sounds: soundsEnabled)
     }
 
+    private func toggleWander() {
+        wanderEnabled.toggle()
+        defaults.set(wanderEnabled, forKey: "BlueFish.wander")
+        if wanderEnabled {
+            nextWanderAt = Date().addingTimeInterval(20)
+        } else {
+            stopWander()
+            nextWanderAt = .distantFuture
+        }
+    }
+
+    private func toggleDropTumble() {
+        dropTumbleEnabled.toggle()
+        defaults.set(dropTumbleEnabled, forKey: "BlueFish.dropTumble")
+        stage.dropTumble = dropTumbleEnabled
+    }
+
     /// Resize the whole pet window in place. The bottom edge keeps its screen
     /// position, so the pet grows/shrinks from its feet instead of jumping.
     private func setPetScale(_ scale: CGFloat) {
@@ -971,6 +1093,16 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         soundItem.state = soundsEnabled ? .on : .off
         menu.addItem(soundItem)
 
+        let wanderItem = NSMenuItem(title: "空闲时自己散步", action: #selector(menuToggleWander), keyEquivalent: "")
+        wanderItem.target = self
+        wanderItem.state = wanderEnabled ? .on : .off
+        menu.addItem(wanderItem)
+
+        let gravityItem = NSMenuItem(title: "放下时摔一跤", action: #selector(menuToggleDropTumble), keyEquivalent: "")
+        gravityItem.target = self
+        gravityItem.state = dropTumbleEnabled ? .on : .off
+        menu.addItem(gravityItem)
+
         menu.addItem(makePetSizeMenu(
             target: self,
             action: #selector(menuSelectSize(_:)),
@@ -1006,6 +1138,8 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     @objc private func menuToggleCard() { toggleCard() }
     @objc private func menuTogglePause() { togglePause() }
     @objc private func menuToggleSound() { toggleSound() }
+    @objc private func menuToggleWander() { toggleWander() }
+    @objc private func menuToggleDropTumble() { toggleDropTumble() }
     @objc private func menuSelectSize(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let preset = PetSizePreset(rawValue: raw) else { return }

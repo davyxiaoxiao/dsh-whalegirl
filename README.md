@@ -28,6 +28,10 @@
 - **费用 / 额度**：费用读取和展示分成两层。DSH 适配器通过 `CostMeterLedgerReader` 直接读 `dsh-cost-meter` 的 `ledger.json` —— 套餐窗口百分比取自 `planSamples`，今日 tokens 与插件侧栏口径一致（`input + output + cacheRead + cacheWrite + reasoning`），另外保留今日花费（CNY）。Codex 的 rollout 只有 token，没有价格；OpenCode 的 SQLite 有每个 assistant message 的 `cost`（USD），可以显示今日花费。OpenCode Go 套餐还会从 `opencode.ai` 的只读 usage 接口拉 5h / 周 / 月百分比。多个 Provider 的今日 tokens 会自动相加，费用按币种分开展示。
 - **拖动走路（带方向）**：按住拖动时切换成三帧走路循环（左脚在前 / 过渡 / 右脚在前）；宠物会朝着你**当前移动的方向**走——往右拖面朝右、往左拖自动镜像面朝左（按每次鼠标移动的平滑速度判断，拖到最左边再往右拖会立刻转身，不是看相对起点的偏移），身体微微朝移动方向倾斜，并且窗口会以 60Hz 平滑追随指针（不是每个鼠标事件跳一次），看起来是「走过去」而不是被瞬移；松手滑到落点后恢复当前任务状态。
   - 丝滑 / 无残影的几个细节：立绘相关图层全部关闭隐式动画（否则换图会自带 0.25s 交叉淡入，就是残影的来源）；换帧只换 `contents`、不重新布局；三帧 0.2s 一帧、浮动 0.3s 与脚步同步；倾斜用独立的 `leanLayer`，不会打断摇摆动画。
+- **完成动作（叉腰得意）**：任务跑完时换成两只手叉在腰上、挺胸抬下巴的得意脸，两帧 0.55s 轮换（憋笑 → 闭眼大笑）加一小段星星粒子；原来那张「举手跳」的 `pet_happy` 保留在 Assets 里没再用。
+- **干饭循环**：`work` 是三帧循环（夹饭 → 闭眼嚼 → 张嘴再夹），嘴巴、筷子手和尾巴各动一点，0.22s 一帧；三层立绘裁到同一张画布上用饭碗对位，换帧不抖。
+- **闲置摸鱼散步**：待命中每隔 9–20 秒掷一次骰子（40% 概率），她会沿着当前高度自己左右走 2–4.6 秒（54 pt/s，三帧走路循环，碰到屏幕边缘自动转身），走完停在原地并记住位置。被她被碰、有任务开始、打开任务面板时都不会散步；右键「空闲时自己散步」可关闭。
+- **拎起来 / 摔一跤 / 爬起来**：按住拖动时不再走路——切到**被拎住后颈**的姿势（身体横过来、弓着背、四肢下垂），两帧轮换（垂手 / 挥爪抗议，0.26s 一帧）再叠一层轻微钟摆，地面阴影淡到几乎看不见，往哪边甩就往哪边倾。松手时窗口**就停在松手的位置、不再下落**，只有立绘演一段：下落帧（两帧 0.15s 轮换、先在空中顿一下再快速坠地，共 0.85s）→ 翻肚皮摔懵（压扁 + 抖动，0.75s）→ 坐起来揉头（0.3s）→ 弹一下站稳、恢复当前任务心情。整套约 2s，中途再按住她可以打断、直接重新拎起来，中途再按住她可以打断、直接重新拎起来。右键「放下时摔一跤」可以关掉这段演出。
 - **事件提醒**：
   - 有任务需要你确认：琥珀色气泡常驻 + 提示音；
   - 任务完成：开心跳一下 + 气泡 + 音效；
@@ -66,9 +70,11 @@ open /Applications/WhaleGirl.app
 | 看头顶气泡 | 干饭中显示任务名 / 动作 / 时长 / 套餐额度 / 今日 tokens；多个任务时每 4.5s 自动轮播；等你确认 / 完成 / 出错时自动切换 |
 | 看任务面板用量条 | `Go 5h %`、`Go 周 %`、`Go 月 %`、`今日 tokens` 四个数字；OpenCode Go 套餐会显示自己的 5h / 周 / 月 |
 | 点任务面板渠道栏 | 在「全部 / DSH / Codex / OpenCode」之间切换；统计、费用、会话列表和「打开目录」都跟着当前渠道 |
-| 拖动宠物 | 移动位置（靠近屏幕边缘会吸附）；拖动期间播放走路帧动画 |
+| 拖动宠物 | 被拎起来：悬空站姿 + 钟摆晃动 + 影子消失；往哪边甩就往哪边倾 |
+| 松手 | 就放在松手的位置，只演动画：下落 → 翻肚皮摔懵 → 坐起来 → 站稳（窗口不移动） |
+| 待命时 | 每隔 9–20 秒有 40% 概率自己左右散步 2–4.6 秒，走到屏幕边缘会转身 |
 | 双击宠物 | 咕噜咕噜～随机互动 |
-| 右键宠物 | 快捷菜单（任务面板、暂停、提示音、宠物大小、重置位置、退出） |
+| 右键宠物 | 快捷菜单（任务面板、暂停、提示音、空闲散步、放下时摔一跤、宠物大小、重置位置、退出） |
 | 右键宠物 → 宠物大小 | 迷你 60% / 小 75% / 标准 100% / 大 120%，立即生效并记住 |
 | 点面板右上角「可更新」 | 自动下载新版 pkg、校验 SHA256，并打开 macOS 安装器 |
 | 菜单栏小鱼 / 右键宠物 → 检查更新 | 手动查一次 GitHub Release（没网或限流会提示） |
@@ -152,15 +158,23 @@ OpenCode 使用本地 SQLite：`~/.local/share/opencode/opencode.db`。`session`
 | 动作 | 帧 | 帧间隔 | 缩放 | 浮动 | 摇摆 | 徽章 | 粒子 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | idle | pet_idle | — | 1.0 | 5 / 3.0s | 0.014 | — | 慢气泡 |
-| work | pet_work | — | 0.85 | 3.5 / 1.45s | 0.020 | — | 快气泡 |
+| work | pet_work / pet_work_b / pet_work_c（嚼饭 3 帧） | 0.22s | 0.85 | 3.5 / 1.45s | 0.020 | — | 快气泡 |
 | wait | pet_idle | — | 1.0 | 2.5 / 2.2s | 0.014 | ! | — |
-| happy | pet_happy | — | 1.0 | 6 / 1.1s | 0.014 | — | 星星 |
+| happy | pet_smug_a / pet_smug_b（叉腰得意 · 炫耀） | 0.55s | 1.0 | 6 / 1.1s | 0.014 | — | 星星 |
 | panic | pet_panic | — | 1.0 | 4 / 0.55s | 0.030 | ! | — |
 | sleep | pet_idle | — | 1.0 | 7 / 4.4s | 0.012 | — | 慢气泡 + zzz |
 | offline | pet_idle | — | 1.0 | 3 / 3.6s | 0.014 | — | — |
 | walk | pet_walk_a / b / c（朝右，往左镜像） | 0.2s | 1.0 | 2.2 / 0.3s | 0.02 | — | 慢气泡 |
+| walk | pet_walk_a / b / c（朝右，往左镜像） | 0.2s | 1.0 | 2.2 / 0.3s | 0.02 | — | 慢气泡（拖动走路已改为「拎起来」，这条留给闲置散步） |
+| held | pet_held_a / pet_held_b（被拎后颈 / 挥爪抗议） | 0.26s | 1.0 | 0 / — | 0 | — | 慢气泡 |
+| falling | pet_fall / pet_fall_b | 0.15s | 1.0 | 0 / — | 0 | — | — |
+| down | pet_down（翻肚皮摔懵） | — | 1.0 | 0 / — | 0 | — | — |
+| getup | pet_getup（坐起来揉头） | — | 1.0 | 0 / — | 0 | — | — |
+| held | pet_idle | — | 1.0 | 0 / — | 0 | — | 慢气泡（悬空：钟摆动画在 `bodyLayer` 上） |
+| falling | pet_panic | — | 1.0 | 0 / — | 0 | — | — |
 
-- `PetActionManager` 决定当前动作、按 `frameInterval` 切帧，并处理「拖动时走路优先、松手恢复当前心情」。
+- `PetActionManager` 决定当前动作、按 `frameInterval` 切帧，并处理「散步时走路优先、松手恢复当前心情」。
+- `PetSpriteView` 里额外有一层 `bodyLayer`（在 sway 层和立绘之间），专门做「被拎起来 / 下落 / 落地」的姿态变换；这段时间 `bodyPhase != .normal`，控制器的 `setMood` 会被暂存到 `deferredMood`，等站稳后再应用，所以任务状态不会在摔倒过程中把表情抢回去。
 - `PetSpriteView` 只负责渲染：`applyAction` 配置一次（帧、缩放、浮动、摇摆、徽章、粒子），`applyFrame` 只换图；三帧走路共用同一张对齐画布，所以换帧不位移、不闪。
 - 想加新动作：在 `PetAction` 里加一条记录，把对应 PNG 放进 `Assets/`，然后在需要的地方调用 `actionManager.play(...)`（目前入口是 `setMood` / `startWalking`）。
 
@@ -243,18 +257,29 @@ make dist        # 打一个 dist/鲸鱼娘.zip
 
 ```text
 Assets/pet_idle.png    待命 / 睡觉 / 等待确认
-Assets/pet_work.png    干饭（吃白饭）
-Assets/pet_happy.png   完成
+Assets/pet_work.png    干饭（吃白饭）· 帧 1
+Assets/pet_work_b.png  干饭 · 帧 2（闭嘴嚼）
+Assets/pet_work_c.png  干饭 · 帧 3（张嘴 · 筷子放下）
+Assets/pet_smug_a.png   完成 · 叉腰得意
+Assets/pet_smug_b.png   完成 · 叉腰大笑
+Assets/pet_happy.png    完成（旧版举手跳，已停用）
 Assets/pet_panic.png   出错
 Assets/pet_walk_a.png  拖动走路 · 朝右 · 右脚在前
 Assets/pet_walk_b.png  拖动走路 · 朝右 · 过渡帧
 Assets/pet_walk_c.png  拖动走路 · 朝右 · 左脚在前
+Assets/pet_held_a.png  被拎起来 · 垂手
+Assets/pet_held_b.png  被拎起来 · 挥爪抗议
+Assets/pet_fall.png    松开后下落
+Assets/pet_down.png    摔在地上 · 翻肚皮
+Assets/pet_getup.png   爬起来 · 坐起来揉头
 ```
 
 - Q 版四态原图切分：`scripts/prepare_sheet.py`，当前切分线 `x=620, y=620`（`make art`）。
 - 走路三帧切分：`scripts/prepare_walk.py dsh-image-gen/image-bce7de69.png --splits 486,978`（`make walk`）；三帧是朝右的三分之四侧身，往左走时整体镜像。三帧统一对齐到同一画布（头部中心 + 地平线），所以换帧不会抖。
 - 工作姿态比站立姿态容易显大，`Sources/BlueFish/PetAction.swift` 里 work 动作的 `scale` 当前是 `0.85`；玩家可以在「宠物大小」里整体缩放，想改各姿态的相对大小仍改这张动作表。
-- 角色设定：Q 版、小号蓝色鱼鳍耳、两条细腿、无鱼尾；根据用户提供的 DeepSeek-chan 同人图重绘。
+- 角色设定：Q 版、鲸鳍耳 + 鲸鱼尾、两条细腿；根据用户提供的 DeepSeek-chan 同人图重绘。
+- 鲸鳍耳：从太阳穴向外伸出、尖端略向下（约 15–25°），耳面藏青带脊线，下缘一圈浅蓝白波浪鳍膜；鲸鱼尾从裙摆后侧伸出，尾根藏青、尾尖浅蓝；趴着干饭那张尾巴压在腿前面，一只鞋从尾巴后探出来。
+- 改立绘时：`scripts/normalize_sprite.py in.png out.png` 负责抠白底 / 清 alpha halo / 裁边（白底走边界 flood fill 并去白边，自带 alpha 的直接清边）；走路帧再走一遍 `scripts/prepare_walk.py` 的 `align()` 对齐到同一画布。当前 7 张原图在 `dsh-image-gen/image-*.png`，被否掉的中间稿在 `dsh-image-gen/drafts/`。
 
 ## 目录
 
