@@ -15,7 +15,7 @@ enum DSHFocus {
         let message: String
     }
 
-    static func jump(to session: SessionSnapshot, currentWorkspace: String?, completion: @escaping (Outcome) -> Void) {
+    static func jump(to session: AgentSession, currentWorkspace: String?, completion: @escaping (Outcome) -> Void) {
         DispatchQueue.main.async {
             guard let app = NSRunningApplication
                 .runningApplications(withBundleIdentifier: "com.deepseek.dsh")
@@ -110,7 +110,7 @@ enum DSHFocus {
         Thread.sleep(forTimeInterval: 0.7)
     }
 
-    private static func focus(_ session: SessionSnapshot, pid: pid_t, currentWorkspace: String?) -> Outcome {
+    private static func focus(_ session: AgentSession, pid: pid_t, currentWorkspace: String?) -> Outcome {
         guard AXIsProcessTrusted() else {
             DispatchQueue.main.async { requestPermission() }
             copyToPasteboard(session.displayTitle)
@@ -169,7 +169,7 @@ enum DSHFocus {
         return Outcome(ok: false, message: "侧栏里没找到这个会话；名字已复制")
     }
 
-    private static func searchKeys(_ session: SessionSnapshot) -> [String] {
+    private static func searchKeys(_ session: AgentSession) -> [String] {
         var keys: [String] = []
         let title = session.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if title.count >= 4 { keys.append(String(title.prefix(14))) }

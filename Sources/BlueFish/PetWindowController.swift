@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 
 final class PetWindowController: NSObject, NSMenuDelegate {
-    private let monitor: DSHMonitor
+    private let monitor: AgentMonitor
     private let card = StatusCardController()
     private let panel: NSPanel
     private let stage: PetStageView
@@ -10,12 +10,18 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     private let controlServer = PetControlServer()
     private let updater = UpdateChecker()
 
-    private var status = DSHStatus()
+    private var status = FleetStatus()
     private var hasLoaded = false
     private var hasSetMood = false
     private var didGreet = false
     private var waitingBubbleActive = false
     private var bubbleHoldUntil: Date = .distantPast
+    private var bubbleCycleSessionID: String?
+    private var bubbleCycleAt: Date = .distantPast
+    private var bubbleCycleOrder: [String] = []
+    private var bubbleRenderedSessionID: String?
+    private var bubbleRenderedWaiting = false
+    private let bubbleCycleInterval: TimeInterval = 4.5
     private var bubbleCollapsed = false
     private var paused = false
     private var soundsEnabled = true
@@ -44,7 +50,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         )
         stage = PetStageView(frame: NSRect(origin: .zero, size: size))
         menuBar = MenuBarController()
-        monitor = DSHMonitor()
+        monitor = AgentMonitor()
 
         super.init()
 
@@ -153,7 +159,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         menuBar.install()
         menuBar.update(status: status, paused: paused, sounds: soundsEnabled)
         updatePet(force: true, announce: false)
-        stage.showChip("正在连接 DSH…", accent: Theme.muted, pulse: false)
+        stage.showChip("正在连接 \(monitor.watchTargetName)…", accent: Theme.muted, pulse: false)
         // First run greeting (replaced by a task announcement if one is pending).
         DebugLog.write("controller start frame=\(panel.frame) visible=\(panel.isVisible) args=\(CommandLine.arguments)")
         if CommandLine.arguments.contains("--bubble-demo") {
@@ -182,13 +188,13 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self, !self.didGreet else { return }
-            // If DSH is already working, the task bubble is more useful than
-            // the introduction.
+            // If an agent is already working, the task bubble is more useful
+            // than the introduction.
             guard self.status.workingSessions.isEmpty else { return }
             self.didGreet = true
             self.showBubble(
                 title: "咕噜…我是鲸鱼娘",
-                detail: "帮你盯着 DSH 的任务 · 点我打开面板，拖我换位置",
+                detail: "帮你盯着 \(self.monitor.watchTargetName) 的任务 · 点我打开面板，拖我换位置",
                 autoHide: 7
             )
         }
@@ -343,7 +349,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
 
     // MARK: - Status pipeline
 
-    private func apply(_ newStatus: DSHStatus) {
+    private func apply(_ newStatus: FleetStatus) {
         let previous = status
         status = newStatus
         card.update(newStatus)
@@ -363,15 +369,15 @@ final class PetWindowController: NSObject, NSMenuDelegate {
                 announceWaiting(waiting, approval: approval)
             } else if newStatus.recentSessions.isEmpty {
                 showBubble(
-                    title: "DSH 好像没开工",
-                    detail: "等你打开 DSH，我会自己醒过来",
+                    title: "\(newStatus.watchTargetName) 好像没开工",
+                    detail: "等你打开 \(newStatus.watchTargetName)，我会自己醒过来",
                     autoHide: 6
                 )
             } else if !didGreet, newStatus.workingSessions.isEmpty {
                 didGreet = true
                 showBubble(
                     title: "咕噜…我是鲸鱼娘",
-                    detail: "帮你盯着 DSH 的任务 · 点我打开面板，拖我换位置",
+                    detail: "帮你盯着 \(newStatus.watchTargetName) 的任务 · 点我打开面板，拖我换位置",
                     autoHide: 9
                 )
             }
@@ -385,20 +391,20 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         menuBar.update(status: status, paused: paused, sounds: soundsEnabled)
     }
 
-    private func seedPhases(_ status: DSHStatus) {
-        lastPhases = Dictionary(uniqueKeysWithValues: status.recentSessions.map { ($0.id, $0.phase) })
+    private func seedPhases(_ status: FleetStatus) {
+        lastPhases = Dictionary(uniqueKeysWithValues: status.recentSessions.map { ($0.uid, $0.phase) })
     }
 
-    private func announceTransitions(from old: DSHStatus, to new: DSHStatus) {
+    private func announceTransitions(from old: FleetStatus, to new: FleetStatus) {
         guard !paused else {
             seedPhases(new)
             return
         }
-        var waiting: [SessionSnapshot] = []
-        var errors: [SessionSnapshot] = []
-        var dones: [SessionSnapshot] = []
+        var waiting: [AgentSession] = []
+        var errors: [AgentSession] = []
+        var dones: [AgentSession] = []
         for session in new.recentSessions {
-            let previous = lastPhases[session.id]
+            let previous = lastPhases[session.uid]
             if previous != session.phase {
                 switch session.phase {
                 case .waiting: waiting.append(session)
@@ -409,7 +415,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             }
         }
         for session in new.recentSessions {
-            lastPhases[session.id] = session.phase
+            lastPhases[session.uid] = session.phase
         }
 
         if let first = waiting.first {
@@ -428,7 +434,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             let detail = session.lastErrorText.map { tail($0.replacingOccurrences(of: "\n", with: " "), 90) } ?? "这轮没有跑完"
             showBubble(
                 title: "呜…出事了",
-                detail: "\(session.workspaceName)：\(detail)",
+                detail: "\(status.sessionContext(session))：\(detail)",
                 autoHide: 9,
                 accent: Theme.red,
                 cost: status.costLine
@@ -444,7 +450,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             let title = dones.count > 1 ? "\(dones.count) 个任务搞定啦！" : "搞定啦！"
             let detail = dones.count > 1
                 ? "海底今天也很努力"
-                : "\(first.workspaceName) · 用了 \(shortDuration(first.elapsed))"
+                : "\(status.sessionContext(first)) · 用了 \(shortDuration(first.elapsed))"
             showBubble(title: title, detail: detail, autoHide: 8, accent: Theme.green, cost: status.costLine)
             playSound("Glass")
             stage.sprite.playJump()
@@ -453,16 +459,16 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         }
     }
 
-    private func announceConnectionChange(from old: DSHStatus, to new: DSHStatus) {
-        if old.dshRunning, !new.dshRunning {
+    private func announceConnectionChange(from old: FleetStatus, to new: FleetStatus) {
+        if old.anyRunning, !new.anyRunning {
             showBubble(
-                title: "DSH 断连了",
-                detail: "后端退出了 · 桌宠会在这里等你",
+                title: "\(new.watchTargetName) 断连了",
+                detail: "\(new.watchTargetName) 退出或停止更新了 · 桌宠会在这里等你",
                 autoHide: 9,
                 accent: Theme.muted
             )
             playSound("Basso")
-        } else if !old.dshRunning, new.dshRunning {
+        } else if !old.anyRunning, new.anyRunning {
             showBubble(
                 title: "重新连上啦",
                 detail: "继续帮你盯任务",
@@ -474,14 +480,14 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         }
     }
 
-    private func announceWaiting(_ session: SessionSnapshot, approval: ApprovalRequest?) {
+    private func announceWaiting(_ session: AgentSession, approval: ApprovalRequest?) {
         let tool = approval?.tool ?? "操作"
         let reason = approval?.reason.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let detail: String
         if reason.isEmpty {
-            detail = "\(session.workspaceName) · 需要你放行 \(tool)"
+            detail = "\(status.sessionContext(session)) · 需要你放行 \(tool)"
         } else {
-            detail = "\(session.workspaceName) · \(tail(reason.replacingOccurrences(of: "\n", with: " "), 78))"
+            detail = "\(status.sessionContext(session)) · \(tail(reason.replacingOccurrences(of: "\n", with: " "), 78))"
         }
         showBubble(
             title: "有任务在等你确认",
@@ -513,7 +519,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         if card.visible { card.reposition(relativeTo: panel.frame) }
     }
 
-    /// While DSH is working, keep a persistent bubble above the pet with the
+    /// While an agent is working, keep a persistent bubble above the pet with the
     /// current task, action and elapsed time. Transient bubbles (done / error /
     /// chatter) win for their display window.
     private func updateBubbleLayer() {
@@ -523,42 +529,97 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             let waited = shortDuration(Date().timeIntervalSince(approval.since))
             let reason = approval.reason.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = reason.isEmpty
-                ? "\(waiting.workspaceName) 需要放行 \(approval.tool)"
-                : "\(waiting.workspaceName) · \(tail(reason.replacingOccurrences(of: "\n", with: " "), 54))"
+                ? "\(status.sessionContext(waiting)) 需要放行 \(approval.tool)"
+                : "\(status.sessionContext(waiting)) · \(tail(reason.replacingOccurrences(of: "\n", with: " "), 54))"
             stage.updateBubble(
                 title: "有任务在等你确认",
                 detail: detail,
                 meta: "已等 \(waited) · \(approval.tool)",
                 cost: status.costLine,
-                accent: Theme.amber
+                accent: Theme.amber,
+                animated: !bubbleRenderedWaiting
+                    && (bubbleRenderedSessionID != nil || stage.isBubbleVisible)
             )
             waitingBubbleActive = true
+            bubbleRenderedWaiting = true
+            bubbleRenderedSessionID = nil
+            bubbleCycleSessionID = nil
+            bubbleCycleOrder.removeAll()
+            bubbleCycleAt = Date()
             return
         }
 
         if Date() < bubbleHoldUntil { return }
 
         let working = status.workingSessions
-        if let first = working.first {
-            let stalled = first.phase == .stalled
-            let name = first.displayTitle.isEmpty ? first.workspaceName : first.displayTitle
-            let title = stalled ? "好像卡住了 · \(tail(name, 13))" : tail(name, 16)
-            let detail = tail(first.actionLine ?? "在思考…", 26)
-            var meta: [String] = ["已跑 \(shortDuration(first.elapsed))"]
-            if first.stepNumber > 0 { meta.append("第 \(first.stepNumber) 步") }
-            if !first.runningJobs.isEmpty { meta.append("后台 \(first.runningJobs.count) 个") }
-            if working.count > 1 { meta.append("另有 \(working.count - 1) 个任务") }
-            stage.updateBubble(
-                title: title,
-                detail: detail,
-                meta: meta.joined(separator: " · "),
-                cost: status.costLine,
-                accent: stalled ? Theme.amber : Theme.cyan
-            )
+        guard !working.isEmpty else {
+            bubbleCycleSessionID = nil
+            bubbleCycleOrder.removeAll()
+            bubbleRenderedSessionID = nil
+            bubbleRenderedWaiting = false
+            if stage.isBubbleVisible { stage.hideBubble() }
             return
         }
 
-        if stage.isBubbleVisible { stage.hideBubble() }
+        // Keep a stable rotation order. `workingSessions` is sorted by recent
+        // activity, so its indices can change every poll; rotating by that
+        // order would repeat sessions and make "1/2" lie.
+        let now = Date()
+        let ids = working.map(\.uid)
+        bubbleCycleOrder.removeAll { !ids.contains($0) }
+        for id in ids where !bubbleCycleOrder.contains(id) {
+            bubbleCycleOrder.append(id)
+        }
+
+        var position: Int
+        if let currentID = bubbleCycleSessionID,
+           let currentPosition = bubbleCycleOrder.firstIndex(of: currentID) {
+            position = currentPosition
+            if bubbleCycleOrder.count > 1, now.timeIntervalSince(bubbleCycleAt) >= bubbleCycleInterval {
+                position = (currentPosition + 1) % bubbleCycleOrder.count
+                bubbleCycleAt = now
+            }
+        } else {
+            // First working session, or the previous one just finished.
+            position = 0
+            bubbleCycleAt = now
+        }
+
+        let chosenID = bubbleCycleOrder[position]
+        guard let chosen = working.first(where: { $0.uid == chosenID }) ?? working.first else {
+            return
+        }
+        bubbleCycleSessionID = chosen.uid
+
+        let animated = bubbleRenderedWaiting
+            || (bubbleRenderedSessionID != nil && bubbleRenderedSessionID != chosen.uid)
+            || (bubbleRenderedSessionID == nil && stage.isBubbleVisible)
+        if animated {
+            DebugLog.write("bubble cycle \(position + 1)/\(bubbleCycleOrder.count) \(chosen.uid)")
+        }
+        bubbleRenderedSessionID = chosen.uid
+        bubbleRenderedWaiting = false
+
+        let stalled = chosen.phase == .stalled
+        let name = chosen.displayTitle.isEmpty ? chosen.workspaceName : chosen.displayTitle
+        let title = stalled ? "好像卡住了 · \(tail(name, 13))" : tail(name, 16)
+        let detail = tail(chosen.actionLine ?? "在思考…", 26)
+        var meta: [String] = []
+        if status.providers.count > 1, !chosen.providerName.isEmpty { meta.append(chosen.providerName) }
+        if bubbleCycleOrder.count > 1 {
+            meta.append("\(position + 1)/\(bubbleCycleOrder.count)")
+        }
+        meta.append("已跑 \(shortDuration(chosen.elapsed))")
+        if chosen.stepNumber > 0 { meta.append("第 \(chosen.stepNumber) 步") }
+        if !chosen.runningJobs.isEmpty { meta.append("后台 \(chosen.runningJobs.count) 个") }
+        stage.updateBubble(
+            title: title,
+            detail: detail,
+            meta: meta.joined(separator: " · "),
+            cost: status.costLine,
+            accent: stalled ? Theme.amber : Theme.cyan,
+            animated: animated
+        )
     }
 
     private func desiredMood() -> PetMood {
@@ -571,7 +632,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         transientMood = nil
         var mood = status.mood
         if mood == .sleeping, Date().timeIntervalSince(lastInteractionAt) < 18 { mood = .idle }
-        if mood == .offline, status.dshRunning { mood = .idle }
+        if mood == .offline, status.anyRunning { mood = .idle }
         return mood
     }
 
@@ -612,7 +673,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         }
         if let error = status.errorSessions.first,
            Date().timeIntervalSince(error.lastErrorAt ?? error.lastEventAt) < 180 {
-            return ("出错了 · \(error.workspaceName)", Theme.red, true)
+            return ("出错了 · \(status.sessionContext(error))", Theme.red, true)
         }
         let working = status.workingSessions
         if let first = working.first {
@@ -638,7 +699,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
         }
         switch status.mood {
         case .sleeping: return ("呼…呼…", Theme.violet, false)
-        case .offline: return ("DSH 断连", Theme.muted, false)
+        case .offline: return ("\(status.watchTargetName) 断连", Theme.muted, false)
         case .happy: return ("搞定！", Theme.green, false)
         case .panic: return ("出错了", Theme.red, false)
         case .waiting: return ("等你确认", Theme.amber, true)
@@ -691,6 +752,8 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             accent: accent ?? currentMood.tint,
             autoHide: autoHide
         )
+        bubbleRenderedSessionID = nil
+        bubbleRenderedWaiting = false
         lastInteractionAt = Date()
         bubbleHoldUntil = autoHide.map { Date().addingTimeInterval($0) } ?? .distantPast
     }
@@ -702,17 +765,30 @@ final class PetWindowController: NSObject, NSMenuDelegate {
 
     // MARK: - Actions
 
-    private func jumpToSession(_ session: SessionSnapshot) {
+    private func jumpToSession(_ session: AgentSession) {
+        let supportsJump = status.providers
+            .first { $0.id == session.providerID }?
+            .capabilities.contains(.sessionJump) ?? false
+        guard supportsJump else {
+            showBubble(
+                title: "\(session.providerName) 还没接跳转",
+                detail: "先按「复制日志路径」看看它在做什么吧",
+                autoHide: 5,
+                accent: Theme.amber
+            )
+            return
+        }
         card.hide()
         showBubble(
-            title: "去 DSH 找会话…",
+            title: "去 \(session.providerName) 找会话…",
             detail: tail(session.displayTitle, 24),
             autoHide: 2.5
         )
         let activeWorkspace = status.sessions
+            .filter { $0.providerID == session.providerID }
             .max(by: { $0.lastEventAt < $1.lastEventAt })?
             .workspaceName
-        DSHFocus.jump(to: session, currentWorkspace: activeWorkspace) { [weak self] outcome in
+        monitor.openSession(session, currentWorkspace: activeWorkspace) { [weak self] outcome in
             guard let self else { return }
             self.showBubble(
                 title: outcome.ok ? "跳过去啦" : "跳转没成功",
@@ -760,7 +836,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
             showBubble(title: "好，我先睡会儿", detail: "监控已暂停 · 点菜单栏的鱼恢复", autoHide: 5)
             transientMood = nil
         } else {
-            showBubble(title: "醒了！", detail: "继续帮你盯着 DSH", autoHide: 4)
+            showBubble(title: "醒了！", detail: "继续帮你盯着 \(status.watchTargetName)", autoHide: 4)
             forceRefresh()
         }
         updatePet(force: true, announce: false)
@@ -946,7 +1022,7 @@ final class PetWindowController: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {}
 
     var petFrame: NSRect { panel.frame }
-    var currentState: DSHStatus { status }
+    var currentState: FleetStatus { status }
     var isPaused: Bool { paused }
     var petVisible: Bool { panel.isVisible }
 }

@@ -2,10 +2,10 @@ import AppKit
 
 final class MenuBarController: NSObject, NSMenuDelegate {
     private var item: NSStatusItem?
-    private var status = DSHStatus()
+    private var status = FleetStatus()
     private var paused = false
     private var soundsEnabled = true
-    private var recentSessions: [SessionSnapshot] = []
+    private var recentSessions: [AgentSession] = []
 
     var onToggleCard: (() -> Void)?
     var onTogglePet: (() -> Void)?
@@ -13,7 +13,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onToggleSound: (() -> Void)?
     var onResetPosition: (() -> Void)?
     var onQuit: (() -> Void)?
-    var onOpenSession: ((SessionSnapshot) -> Void)?
+    var onOpenSession: ((AgentSession) -> Void)?
     var currentSize: (() -> PetSizePreset)?
     var onSelectSize: ((PetSizePreset) -> Void)?
     var updateVersion: (() -> String?)?
@@ -26,7 +26,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if let button = statusItem.button {
             button.image = icon()
             button.imagePosition = .imageOnly
-            button.toolTip = "鲸鱼娘 · DSH 桌面宠物"
+            button.toolTip = "鲸鱼娘 · 本地代理桌宠"
         }
         let menu = NSMenu()
         menu.delegate = self
@@ -35,7 +35,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         item = statusItem
     }
 
-    func update(status: DSHStatus, paused: Bool, sounds: Bool) {
+    func update(status: FleetStatus, paused: Bool, sounds: Bool) {
         self.status = status
         self.paused = paused
         self.soundsEnabled = sounds
@@ -43,7 +43,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard let button = item?.button else { return }
         button.image = icon()
         button.contentTintColor = nil
-        button.toolTip = "鲸鱼娘 · \(paused ? "已暂停" : status.mood.title) · \(status.headline)"
+        button.toolTip = "鲸鱼娘 · \(paused ? "已暂停" : status.moodText) · \(status.headline)"
     }
 
     private func icon() -> NSImage? {
@@ -85,7 +85,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 .foregroundColor: NSColor.labelColor
             ]
         )
-        let stateText = paused ? " · 监控暂停" : " · \(status.mood.title)"
+        let stateText = paused ? " · 监控暂停" : " · \(status.moodText)"
         title.append(NSAttributedString(
             string: stateText,
             attributes: [
@@ -153,11 +153,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 ]
             )
             menu.addItem(section)
+            let multiProvider = status.providers.count > 1
             for session in recentSessions.prefix(4) {
-                let title = "\(session.phase.label) · \(tail(session.displayTitle, 24))"
+                let providerPrefix = multiProvider && !session.providerName.isEmpty
+                    ? "\(session.providerName) · "
+                    : ""
+                let title = "\(session.phase.label) · \(providerPrefix)\(tail(session.displayTitle, 24))"
                 let item = NSMenuItem(title: title, action: #selector(openSession(_:)), keyEquivalent: "")
                 item.target = self
-                item.representedObject = session.id
+                item.representedObject = session.uid
                 item.image = dotImage(color: session.phase.color)
                 menu.addItem(item)
             }
@@ -198,8 +202,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func openSession(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let session = recentSessions.first(where: { $0.id == id }) else { return }
+        guard let uid = sender.representedObject as? String,
+              let session = recentSessions.first(where: { $0.uid == uid }) else { return }
         onOpenSession?(session)
     }
 }

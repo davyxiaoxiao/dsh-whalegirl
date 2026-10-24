@@ -80,6 +80,15 @@ enum SnapshotRunner {
             if let content = cardController.panel.contentView {
                 content.layoutSubtreeIfNeeded()
                 render(content, to: url.appendingPathComponent("08_card.png"), scale: 2)
+
+                cardController.selectProvider(AgentProviderID.codex)
+                content.layoutSubtreeIfNeeded()
+                render(content, to: url.appendingPathComponent("08b_card_codex.png"), scale: 2)
+
+                cardController.selectProvider(AgentProviderID.openCode)
+                content.layoutSubtreeIfNeeded()
+                render(content, to: url.appendingPathComponent("08c_card_opencode.png"), scale: 2)
+                cardController.selectProvider(nil)
             }
             print("snapshots written to \(url.path)")
             NSApp.terminate(nil)
@@ -108,18 +117,19 @@ enum SnapshotRunner {
         try? data.write(to: url)
     }
 
-    private static func mockStatus() -> DSHStatus {
-        var status = DSHStatus()
-        status.dshRunning = true
-        status.todayCost = 4.53
-        status.todayCalls = 116
-        status.todayTokens = 85_900_000
-        status.planQuotas = [
-            PlanQuota(provider: "Go", window: "5h", percent: 7, resetsAt: nil, sampledAt: Date()),
-            PlanQuota(provider: "Go", window: "周", percent: 11, resetsAt: nil, sampledAt: Date()),
-            PlanQuota(provider: "Go", window: "月", percent: 5, resetsAt: nil, sampledAt: Date())
-        ]
-        status.updatedAt = Date()
+    private static func mockStatus() -> FleetStatus {
+        var dshUsage = ProviderUsage(
+            providerID: AgentProviderID.dsh,
+            providerName: "DSH",
+            today: UsageTotals(costCNY: 4.53, calls: 116, tokens: 85_900_000),
+            quotas: [
+                UsageQuota(provider: "Go", window: "5h", percent: 7, resetsAt: nil, sampledAt: Date()),
+                UsageQuota(provider: "Go", window: "周", percent: 11, resetsAt: nil, sampledAt: Date()),
+                UsageQuota(provider: "Go", window: "月", percent: 5, resetsAt: nil, sampledAt: Date())
+            ],
+            sourceLabel: "dsh-cost-meter"
+        )
+        dshUsage.providerName = "DSH"
 
         var working = mockSession(
             id: "session-aaaa1111",
@@ -174,12 +184,102 @@ enum SnapshotRunner {
         error.lastErrorText = "503: Upstream request failed: Endpoint is unavailable."
         error.phase = .error
 
-        status.sessions = [working, waiting, done, error]
+        var codexWorking = mockSession(
+            id: "019f0a2b-1111-2222-3333-444455556666",
+            title: "给设置页补上暗色模式",
+            workspace: "oa",
+            cwd: "/Users/example/projects/oa",
+            providerID: AgentProviderID.codex,
+            providerName: "Codex"
+        )
+        codexWorking.turnActive = true
+        codexWorking.turnStartedAt = Date().addingTimeInterval(-72)
+        codexWorking.lastToolName = "改代码"
+        codexWorking.lastToolDetail = "SettingsView.swift"
+        codexWorking.tokensThisTurn = 42_300
+        codexWorking.phase = .working
+
+        var openCodeWorking = mockSession(
+            id: "ses_demo_opencode",
+            title: "把语音玩具接上大模型",
+            workspace: "ai-voice-toy",
+            cwd: "/Users/example/projects/ai-voice-toy",
+            providerID: AgentProviderID.openCode,
+            providerName: "OpenCode"
+        )
+        openCodeWorking.turnActive = true
+        openCodeWorking.turnStartedAt = Date().addingTimeInterval(-95)
+        openCodeWorking.lastToolName = "跑命令"
+        openCodeWorking.lastToolDetail = "npm run dev"
+        openCodeWorking.tokensThisTurn = 38_200
+        openCodeWorking.phase = .working
+
+        let dsh = ProviderStatus(
+            id: AgentProviderID.dsh,
+            name: "DeepSeek Harness",
+            shortName: "DSH",
+            running: true,
+            sessions: [working, waiting, done, error],
+            usage: dshUsage,
+            watchPath: "/Users/example/.dsh/sessions",
+            capabilities: .all,
+            updatedAt: Date()
+        )
+        let codex = ProviderStatus(
+            id: AgentProviderID.codex,
+            name: "Codex",
+            shortName: "Codex",
+            running: true,
+            sessions: [codexWorking],
+            usage: ProviderUsage(
+                providerID: AgentProviderID.codex,
+                providerName: "Codex",
+                today: UsageTotals(costCNY: nil, calls: 37, tokens: 1_200_000),
+                quotas: [],
+                sourceLabel: "~/.codex/sessions"
+            ),
+            watchPath: "/Users/example/.codex/sessions",
+            capabilities: [.sessions, .usage, .reveal],
+            updatedAt: Date()
+        )
+
+        let openCode = ProviderStatus(
+            id: AgentProviderID.openCode,
+            name: "OpenCode",
+            shortName: "OpenCode",
+            running: true,
+            sessions: [openCodeWorking],
+            usage: ProviderUsage(
+                providerID: AgentProviderID.openCode,
+                providerName: "OpenCode",
+                today: UsageTotals(costCNY: nil, costUSD: 0.42, calls: 18, tokens: 620_000),
+                quotas: [
+                    UsageQuota(provider: "Go", window: "5h", percent: 11, resetsAt: nil, sampledAt: Date()),
+                    UsageQuota(provider: "Go", window: "周", percent: 29, resetsAt: nil, sampledAt: Date()),
+                    UsageQuota(provider: "Go", window: "月", percent: 14, resetsAt: nil, sampledAt: Date())
+                ],
+                sourceLabel: "~/.local/share/opencode/opencode.db"
+            ),
+            watchPath: "/Users/example/.local/share/opencode",
+            capabilities: [.sessions, .usage, .reveal],
+            updatedAt: Date()
+        )
+
+        var status = FleetStatus()
+        status.providers = [dsh, codex, openCode]
+        status.updatedAt = Date()
         return status
     }
 
-    private static func mockSession(id: String, title: String, workspace: String, cwd: String) -> SessionSnapshot {
-        SessionSnapshot(
+    private static func mockSession(
+        id: String,
+        title: String,
+        workspace: String,
+        cwd: String,
+        providerID: String = AgentProviderID.dsh,
+        providerName: String = "DSH"
+    ) -> AgentSession {
+        AgentSession(
             id: id,
             directory: "/tmp/\(id)",
             logPath: "/tmp/\(id)/session.v4.jsonl.zstd",
@@ -188,7 +288,9 @@ enum SnapshotRunner {
             workspaceName: workspace,
             createdAt: Date().addingTimeInterval(-3600),
             lastEventAt: Date().addingTimeInterval(-12),
-            fileModifiedAt: Date()
+            fileModifiedAt: Date(),
+            providerID: providerID,
+            providerName: providerName
         )
     }
 }

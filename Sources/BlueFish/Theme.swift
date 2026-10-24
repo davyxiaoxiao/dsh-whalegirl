@@ -30,6 +30,17 @@ enum Theme {
     static func mono(_ size: CGFloat, _ weight: NSFont.Weight = .medium) -> NSFont {
         NSFont.monospacedSystemFont(ofSize: size, weight: weight)
     }
+
+    /// One accent per monitored channel, used by the task-board filter.
+    static func providerAccent(_ id: String?) -> NSColor {
+        switch id {
+        case nil, AgentProviderID.dsh: return cyan
+        case AgentProviderID.codex: return violet
+        case AgentProviderID.claudeCode: return amber
+        case AgentProviderID.openCode: return blue
+        default: return cyan
+        }
+    }
 }
 
 // MARK: - Mood
@@ -67,7 +78,7 @@ enum PetMood: String {
 
     var title: String {
         switch self {
-        case .offline: return "DSH 断连"
+        case .offline: return "断连"
         case .sleeping: return "呼呼大睡"
         case .idle: return "待命中"
         case .working: return "干饭中"

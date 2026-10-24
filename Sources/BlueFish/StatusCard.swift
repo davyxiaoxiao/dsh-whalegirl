@@ -59,7 +59,7 @@ private final class UsageStripView: NSView {
                 .font: Theme.rounded(10.5, .regular),
                 .foregroundColor: Theme.muted
             ]
-            let text = "未读取到 dsh-cost-meter 用量"
+            let text = "未读取到费用 / 额度数据"
             let size = (text as NSString).size(withAttributes: attrs)
             (text as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2), withAttributes: attrs)
             return
@@ -97,15 +97,17 @@ private final class UsageStripView: NSView {
 private final class SessionRowView: NSView {
     var onOpen: (() -> Void)?
     var onMenu: ((NSEvent) -> Void)?
-    private var session: SessionSnapshot?
+    private var session: AgentSession?
+    private var showProvider = false
     private var hovered = false
     private var tracking: NSTrackingArea?
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
 
-    func update(session: SessionSnapshot) {
+    func update(session: AgentSession, showProvider: Bool) {
         self.session = session
+        self.showProvider = showProvider
         toolTip = session.cwd
         needsDisplay = true
     }
@@ -166,7 +168,8 @@ private final class SessionRowView: NSView {
         ]
         (session.displayTitle as NSString).draw(in: titleRect, withAttributes: titleAttrs)
 
-        let meta = "\(session.workspaceName) · \(session.actionLine ?? "暂无动作")"
+        let providerPrefix = showProvider && !session.providerName.isEmpty ? "\(session.providerName) · " : ""
+        let meta = "\(providerPrefix)\(session.workspaceName) · \(session.actionLine ?? "暂无动作")"
         let metaAttrs: [NSAttributedString.Key: Any] = [
             .font: Theme.rounded(10.5, .regular),
             .foregroundColor: Theme.muted
@@ -202,21 +205,25 @@ private final class SessionRowView: NSView {
 }
 
 private final class SessionListView: NSView {
-    var onOpen: ((SessionSnapshot) -> Void)?
-    var onMenu: ((SessionSnapshot, NSEvent) -> Void)?
+    var onOpen: ((AgentSession) -> Void)?
+    var onMenu: ((AgentSession, NSEvent) -> Void)?
     private var rows: [SessionRowView] = []
-    private var sessions: [SessionSnapshot] = []
+    private var sessions: [AgentSession] = []
     private var order: [String] = []
+    private var showProvider = false
+    private var emptyText = "海底很安静 · 还没开工"
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
 
-    func update(_ sessions: [SessionSnapshot]) {
-        let newOrder = sessions.map(\.id)
+    func update(_ sessions: [AgentSession], showProvider: Bool, emptyText: String) {
+        let newOrder = sessions.map(\.uid)
         self.sessions = sessions
+        self.showProvider = showProvider
+        self.emptyText = emptyText
         if newOrder == order, rows.count == sessions.count {
             for (row, session) in zip(rows, sessions) {
-                row.update(session: session)
+                row.update(session: session, showProvider: showProvider)
             }
             needsLayout = true
             needsDisplay = true
@@ -227,15 +234,16 @@ private final class SessionListView: NSView {
         rows.removeAll()
         for session in sessions {
             let row = SessionRowView(frame: .zero)
-            let id = session.id
+            let uid = session.uid
             row.onOpen = { [weak self] in
-                guard let self, let s = self.sessions.first(where: { $0.id == id }) else { return }
+                guard let self, let s = self.sessions.first(where: { $0.uid == uid }) else { return }
                 self.onOpen?(s)
             }
             row.onMenu = { [weak self] event in
-                guard let self, let s = self.sessions.first(where: { $0.id == id }) else { return }
+                guard let self, let s = self.sessions.first(where: { $0.uid == uid }) else { return }
                 self.onMenu?(s, event)
             }
+            row.update(session: session, showProvider: showProvider)
             addSubview(row)
             rows.append(row)
         }
@@ -248,7 +256,7 @@ private final class SessionListView: NSView {
         let gap: CGFloat = 7
         for (i, row) in rows.enumerated() {
             row.frame = NSRect(x: 0, y: CGFloat(i) * (h + gap), width: bounds.width, height: h)
-            row.update(session: sessions[i])
+            row.update(session: sessions[i], showProvider: showProvider)
         }
         let height = rows.isEmpty ? 120 : CGFloat(rows.count) * (h + gap)
         if abs(frame.height - height) > 0.5 {
@@ -261,7 +269,7 @@ private final class SessionListView: NSView {
         guard sessions.isEmpty else { return }
         let font = Theme.rounded(12, .regular)
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Theme.muted]
-        let text = "海底很安静 · DSH 还没开工"
+        let text = emptyText
         let size = (text as NSString).size(withAttributes: attrs)
         (text as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: 36), withAttributes: attrs)
         if let image = NSImage(systemSymbolName: "fish", accessibilityDescription: nil) {
@@ -490,6 +498,181 @@ private final class UpdatePillView: NSView {
     }
 }
 
+// MARK: - Provider filter
+
+/// Compact channel switcher above the session list. Items are generated from
+/// the providers in the current fleet snapshot, so adding Claude Code /
+/// OpenCode later automatically adds their tabs.
+private final class ProviderFilterBar: NSView {
+    struct Item {
+        let id: String?      // nil = all channels
+        let title: String
+        let count: Int
+    }
+
+    var onSelect: ((String?) -> Void)?
+
+    private var items: [Item] = []
+    private var selectedID: String?
+    private var hoveredIndex: Int?
+    private var tracking: NSTrackingArea?
+
+    private struct Pill {
+        let rect: NSRect
+        let item: Item
+        let text: String
+    }
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func update(items: [Item], selected: String?) {
+        self.items = items
+        if items.contains(where: { $0.id == selected }) {
+            selectedID = selected
+        } else {
+            selectedID = items.first?.id
+        }
+        needsDisplay = true
+    }
+
+    func select(_ id: String?) {
+        selectedID = id
+        needsDisplay = true
+    }
+
+    var selected: String? { selectedID }
+
+    private func makePills(showCounts: Bool, padding: CGFloat, gap: CGFloat) -> [Pill] {
+        let font = Theme.rounded(9.5, .semibold)
+        let height: CGFloat = 24
+        let y = (bounds.height - height) / 2
+        var x: CGFloat = 0
+        var result: [Pill] = []
+        for item in items {
+            let text = showCounts && item.count > 0 ? "\(item.title) \(item.count)" : item.title
+            let textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+            let width = max(34, textWidth + padding * 2)
+            result.append(Pill(
+                rect: NSRect(x: x, y: y, width: width, height: height),
+                item: item,
+                text: text
+            ))
+            x += width + gap
+        }
+        return result
+    }
+
+    private func pills() -> [Pill] {
+        guard !items.isEmpty, bounds.width > 10 else { return [] }
+        var layout = makePills(showCounts: true, padding: 9, gap: 5)
+        if (layout.last?.rect.maxX ?? 0) > bounds.width {
+            layout = makePills(showCounts: false, padding: 9, gap: 5)
+        }
+        if (layout.last?.rect.maxX ?? 0) > bounds.width {
+            layout = makePills(showCounts: false, padding: 6, gap: 4)
+        }
+        if (layout.last?.rect.maxX ?? 0) > bounds.width, !layout.isEmpty {
+            // Very narrow / many channels: equal columns, titles truncate.
+            let width = bounds.width / CGFloat(layout.count)
+            layout = layout.enumerated().map { index, pill in
+                Pill(
+                    rect: NSRect(
+                        x: CGFloat(index) * width,
+                        y: pill.rect.origin.y,
+                        width: max(30, width - 4),
+                        height: pill.rect.height
+                    ),
+                    item: pill.item,
+                    text: pill.item.title
+                )
+            }
+        }
+        return layout
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let layout = pills()
+        let font = Theme.rounded(9.5, .semibold)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineBreakMode = .byTruncatingTail
+
+        for (index, pill) in layout.enumerated() {
+            let selected = pill.item.id == selectedID
+            let hovered = hoveredIndex == index
+            let accent = Theme.providerAccent(pill.item.id)
+            let path = NSBezierPath(roundedRect: pill.rect, xRadius: 9, yRadius: 9)
+
+            if selected {
+                accent.withAlphaComponent(0.20).setFill()
+                path.fill()
+                accent.withAlphaComponent(0.70).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            } else {
+                (hovered ? Theme.rowFill.withAlphaComponent(0.85) : Theme.rowFill.withAlphaComponent(0.45)).setFill()
+                path.fill()
+            }
+
+            let color: NSColor = selected ? .white : (hovered ? Theme.ink : Theme.muted)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph
+            ]
+            (pill.text as NSString).draw(
+                in: pill.rect.insetBy(dx: 4, dy: 5),
+                withAttributes: attrs
+            )
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let index = pills().firstIndex { $0.rect.contains(point) }
+        guard index != hoveredIndex else { return }
+        let wasHovered = hoveredIndex != nil
+        hoveredIndex = index
+        if index != nil, !wasHovered {
+            NSCursor.pointingHand.push()
+        } else if index == nil, wasHovered {
+            NSCursor.pop()
+        }
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard hoveredIndex != nil else { return }
+        hoveredIndex = nil
+        NSCursor.pop()
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let index = pills().firstIndex(where: { $0.rect.contains(point) }) else { return }
+        let item = items[index]
+        selectedID = item.id
+        needsDisplay = true
+        onSelect?(item.id)
+    }
+}
+
 // MARK: - Card
 
 final class StatusCardController: NSObject {
@@ -498,29 +681,31 @@ final class StatusCardController: NSObject {
     private let iconView = NSImageView(frame: .zero)
     private let iconBox = NSView(frame: .zero)
     private let titleLabel = NSTextField(labelWithString: "深海任务台")
-    private let subtitleLabel = NSTextField(labelWithString: "DeepSeek Harness · 本地监控")
+    private let subtitleLabel = NSTextField(labelWithString: "本地监控")
     private let closeButton = NSButton(frame: .zero)
     private let workTile = StatTileView(frame: .zero)
     private let waitTile = StatTileView(frame: .zero)
     private let costTile = StatTileView(frame: .zero)
     private let usageStrip = UsageStripView(frame: .zero)
-    private let sectionLabel = NSTextField(labelWithString: "最近任务")
+    private let filterBar = ProviderFilterBar(frame: .zero)
     private let refreshButton = NSButton(frame: .zero)
     private let scrollView = NSScrollView(frame: .zero)
     private let listView = SessionListView(frame: .zero)
-    private let footerLabel = NSTextField(labelWithString: "仅读取 ~/.dsh/sessions · 每 1.5s 刷新")
+    private let footerLabel = NSTextField(labelWithString: "仅读取本地日志 · 每 1.5s 刷新")
     private let revealButton = NSButton(frame: .zero)
     private let updatePill = UpdatePillView(frame: .zero)
 
-    private var status = DSHStatus()
-    private var currentSessions: [SessionSnapshot] = []
+    private var status = FleetStatus()
+    private var fullStatus = FleetStatus()
+    private var selectedProviderID: String?
+    private var currentSessions: [AgentSession] = []
     private var isVisible = false
     private var updateState: PetUpdateState = .idle
 
     var onClose: (() -> Void)?
     var onRefresh: (() -> Void)?
     var onReveal: ((String) -> Void)?
-    var onOpenSession: ((SessionSnapshot) -> Void)?
+    var onOpenSession: ((AgentSession) -> Void)?
     var onUpdate: (() -> Void)?
 
     final class CardPanel: NSPanel {
@@ -604,12 +789,13 @@ final class StatusCardController: NSObject {
         usageStrip.frame = NSRect(x: 20, y: 314, width: 352, height: 48)
         root.addSubview(usageStrip)
 
-        sectionLabel.frame = NSRect(x: 20, y: 288, width: 200, height: 18)
-        sectionLabel.font = Theme.rounded(12, .semibold)
-        sectionLabel.textColor = Theme.ink
-        root.addSubview(sectionLabel)
+        filterBar.frame = NSRect(x: 20, y: 278, width: 306, height: 26)
+        filterBar.onSelect = { [weak self] id in
+            self?.selectProvider(id)
+        }
+        root.addSubview(filterBar)
 
-        refreshButton.frame = NSRect(x: 340, y: 284, width: 28, height: 24)
+        refreshButton.frame = NSRect(x: 340, y: 279, width: 28, height: 24)
         refreshButton.bezelStyle = .inline
         refreshButton.isBordered = false
         refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新")?
@@ -619,7 +805,7 @@ final class StatusCardController: NSObject {
         refreshButton.action = #selector(refreshTapped)
         root.addSubview(refreshButton)
 
-        scrollView.frame = NSRect(x: 18, y: 50, width: 356, height: 232)
+        scrollView.frame = NSRect(x: 18, y: 50, width: 356, height: 222)
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.scrollerStyle = .overlay
@@ -656,28 +842,79 @@ final class StatusCardController: NSObject {
 
     // MARK: API
 
-    func update(_ status: DSHStatus) {
+    func update(_ newStatus: FleetStatus) {
+        fullStatus = newStatus
+        if let selected = selectedProviderID,
+           !newStatus.providers.contains(where: { $0.id == selected }) {
+            selectedProviderID = nil
+        }
+        filterBar.update(items: channelItems(newStatus), selected: selectedProviderID)
+        applyFilteredStatus()
+    }
+
+    /// Used by the snapshot runner (and future deep links) to preview a channel.
+    func selectProvider(_ id: String?) {
+        if let id, !fullStatus.providers.contains(where: { $0.id == id }) { return }
+        selectedProviderID = id
+        filterBar.select(id)
+        applyFilteredStatus()
+        if isVisible { layoutList() }
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func channelItems(_ status: FleetStatus) -> [ProviderFilterBar.Item] {
+        var items = [ProviderFilterBar.Item(id: nil, title: "全部", count: status.sessions.count)]
+        items.append(contentsOf: status.providers.map {
+            ProviderFilterBar.Item(id: $0.id, title: $0.shortName, count: $0.sessions.count)
+        })
+        return items
+    }
+
+    private func applyFilteredStatus() {
+        let status = fullStatus.filtered(to: selectedProviderID)
         self.status = status
-        subtitleLabel.stringValue = status.dshRunning
-            ? "DeepSeek Harness · 本地监控"
-            : "DeepSeek Harness · 已断连"
-        subtitleLabel.textColor = status.dshRunning ? Theme.muted : Theme.red
+        subtitleLabel.stringValue = status.subtitle
+        subtitleLabel.textColor = status.anyRunning ? Theme.muted : Theme.red
         let visible = status.recentSessions
         workTile.update(value: "\(status.workingSessions.count)", label: "干饭中的鱼", accent: Theme.cyan)
         waitTile.update(value: "\(status.attentionSessions.count)", label: "等你确认", accent: status.attentionSessions.isEmpty ? Theme.muted : Theme.amber)
-        let cost: String
-        if let c = status.todayCost {
-            cost = String(format: "¥%.2f", c)
+
+        let costValue: String
+        let costLabel: String
+        if let cost = status.todayCost {
+            costValue = String(format: "¥%.2f", cost)
+            costLabel = status.todayCalls.map { "今日消耗 · \($0) 次" } ?? "今日消耗"
+        } else if let cost = status.todayCostUSD {
+            costValue = String(format: "$%.2f", cost)
+            costLabel = status.todayCalls.map { "今日消耗 · \($0) 次" } ?? "今日消耗"
+        } else if let tokens = status.todayTokens, tokens > 0 {
+            costValue = compactTokens(tokens)
+            costLabel = "今日 tokens"
         } else {
-            cost = "—"
+            costValue = "—"
+            costLabel = "今日消耗"
         }
-        let costLabel = status.todayCalls.map { "今日消耗 · \($0) 次" } ?? "今日消耗"
-        costTile.update(value: cost, label: costLabel, accent: Theme.green)
+        costTile.update(value: costValue, label: costLabel, accent: Theme.green)
+        costTile.toolTip = costBreakdown(status)
 
         var items: [(value: String, label: String, accent: NSColor)] = []
-        for quota in status.planQuotas.prefix(3) {
+        let multiSource = status.usageSources.count > 1
+        let quotaLimit = 3
+        let sources = status.usageSources
+        var quotaRows: [(UsageQuota, ProviderUsage)] = []
+        let depth = sources.map(\.quotas.count).max() ?? 0
+        for index in 0..<depth {
+            for usage in sources where index < usage.quotas.count {
+                quotaRows.append((usage.quotas[index], usage))
+            }
+        }
+        for (quota, usage) in quotaRows where items.count < quotaLimit {
             let accent = quota.percent >= 80 ? Theme.red : (quota.percent >= 60 ? Theme.amber : Theme.cyan)
-            items.append(("\(quota.percent)%", "\(quota.provider) \(quota.window)", accent))
+            let label = multiSource
+                ? "\(usage.providerName) \(quota.provider) \(quota.window)"
+                : "\(quota.provider) \(quota.window)"
+            items.append(("\(quota.percent)%", label, accent))
         }
         if let tokens = status.todayTokens, tokens > 0 {
             items.append((compactTokens(tokens), "今日 tokens", Theme.green))
@@ -685,10 +922,29 @@ final class StatusCardController: NSObject {
             items.append((String(format: "¥%.2f", todayCost), "今日花费", Theme.green))
         }
         usageStrip.update(items)
-        listView.update(Array(visible.prefix(12)))
+        let sourceLabels = status.usageSources.compactMap(\.sourceLabel)
+        usageStrip.toolTip = sourceLabels.isEmpty ? nil : sourceLabels.joined(separator: " · ")
+        listView.update(
+            Array(visible.prefix(24)),
+            showProvider: status.providers.count > 1,
+            emptyText: "海底很安静 · \(status.watchTargetName) 还没开工"
+        )
         currentSessions = visible
-        footerLabel.stringValue = "点击会话跳到 DSH · 仅读取 ~/.dsh"
+        footerLabel.stringValue = status.footerText
         if isVisible { layoutList() }
+    }
+
+    private func costBreakdown(_ status: FleetStatus) -> String? {
+        let lines = status.usageSources.map { usage -> String in
+            var parts: [String] = []
+            if let cost = usage.today?.costCNY { parts.append(String(format: "¥%.2f", cost)) }
+            if let cost = usage.today?.costUSD { parts.append(String(format: "$%.2f", cost)) }
+            if let calls = usage.today?.calls { parts.append("\(calls) 次") }
+            if let tokens = usage.today?.tokens { parts.append("\(compactTokens(tokens)) tok") }
+            let quota = usage.quotas.first.map { " · \($0.label)" } ?? ""
+            return "\(usage.providerName)：\(parts.isEmpty ? "—" : parts.joined(separator: " · "))\(quota)"
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// Called by the update checker; the pill is the only visible surface.
@@ -781,17 +1037,20 @@ final class StatusCardController: NSObject {
     }
 
     @objc private func revealTapped() {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh/sessions")
-        NSWorkspace.shared.open(url)
+        guard let path = status.revealPath else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
-    private func showRowMenu(session: SessionSnapshot, event: NSEvent) {
+    private func showRowMenu(session: AgentSession, event: NSEvent) {
         let menu = NSMenu()
-        let jump = NSMenuItem(title: "跳到 DSH 会话", action: nil, keyEquivalent: "")
-        jump.representedObject = session.id
-        jump.target = self
-        jump.action = #selector(menuJump(_:))
-        menu.addItem(jump)
+        let provider = status.providers.first { $0.id == session.providerID }
+        if provider?.capabilities.contains(.sessionJump) ?? false {
+            let jump = NSMenuItem(title: "跳到 \(session.providerName) 会话", action: nil, keyEquivalent: "")
+            jump.representedObject = session.uid
+            jump.target = self
+            jump.action = #selector(menuJump(_:))
+            menu.addItem(jump)
+        }
         let open = NSMenuItem(title: "在 Finder 中打开工作区", action: nil, keyEquivalent: "")
         open.representedObject = session.cwd
         open.target = self
@@ -812,8 +1071,8 @@ final class StatusCardController: NSObject {
     }
 
     @objc private func menuJump(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let session = currentSessions.first(where: { $0.id == id }) else { return }
+        guard let uid = sender.representedObject as? String,
+              let session = currentSessions.first(where: { $0.uid == uid }) else { return }
         onOpenSession?(session)
     }
 

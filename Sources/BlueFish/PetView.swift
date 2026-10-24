@@ -834,6 +834,12 @@ final class PetSpriteView: NSView {
 
 // MARK: - Stage
 
+/// A temporary snapshot of the outgoing bubble. It fades out while the live
+/// bubble fades in; clicks pass through during the ~0.26 s transition.
+private final class BubbleSnapshotView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 final class PetStageView: NSView {
     let sprite = PetSpriteView(frame: .zero)
     let chip = StatusChipView(frame: .zero)
@@ -848,6 +854,7 @@ final class PetStageView: NSView {
 
     private var bubbleVisible = false
     private var bubbleHideWork: DispatchWorkItem?
+    private var bubbleTransition: NSImageView?
     private var dragStartMouse = NSPoint.zero
     private var dragStartOrigin = NSPoint.zero
     private var dragTarget: NSPoint?
@@ -1122,6 +1129,7 @@ final class PetStageView: NSView {
 
     func showBubble(title: String, detail: String, meta: String = "", cost: String = "", accent: NSColor, autoHide: TimeInterval?) {
         bubbleHideWork?.cancel()
+        clearBubbleTransition()
         bubble.configure(title: title, detail: detail, meta: meta, cost: cost, accent: accent)
         layoutBubble()
         bubble.isHidden = false
@@ -1144,22 +1152,40 @@ final class PetStageView: NSView {
 
     /// Update the visible bubble in place (used by the persistent "working"
     /// bubble so the elapsed timer ticks without re-playing the fade-in).
-    func updateBubble(title: String, detail: String, meta: String = "", cost: String = "", accent: NSColor) {
+    ///
+    /// `animated` crossfades the outgoing content into the incoming content.
+    /// It is used when the bubble cycles between several working sessions.
+    func updateBubble(
+        title: String,
+        detail: String,
+        meta: String = "",
+        cost: String = "",
+        accent: NSColor,
+        animated: Bool = false
+    ) {
         guard bubbleVisible else {
             showBubble(title: title, detail: detail, meta: meta, cost: cost, accent: accent, autoHide: nil)
             return
         }
         bubbleHideWork?.cancel()
         bubbleHideWork = nil
-        bubble.configure(title: title, detail: detail, meta: meta, cost: cost, accent: accent)
-        layoutBubble()
-        bubble.needsDisplay = true
+        let configure = { [self] in
+            bubble.configure(title: title, detail: detail, meta: meta, cost: cost, accent: accent)
+            layoutBubble()
+            bubble.needsDisplay = true
+        }
+        if animated, bubbleTransition == nil, bubble.alphaValue > 0.99 {
+            crossfadeBubble(configure)
+        } else {
+            configure()
+        }
         chip.isHidden = true
     }
 
     func hideBubble() {
         bubbleHideWork?.cancel()
         bubbleHideWork = nil
+        clearBubbleTransition()
         guard bubbleVisible else { return }
         bubbleVisible = false
         NSAnimationContext.runAnimationGroup({ context in
@@ -1173,6 +1199,53 @@ final class PetStageView: NSView {
     }
 
     var isBubbleVisible: Bool { bubbleVisible }
+
+    // MARK: Bubble transitions
+
+    private func crossfadeBubble(_ update: @escaping () -> Void) {
+        guard bubbleVisible, !bubble.isHidden, bubble.bounds.width > 1,
+              let rep = bubble.bitmapImageRepForCachingDisplay(in: bubble.bounds) else {
+            update()
+            return
+        }
+        bubble.cacheDisplay(in: bubble.bounds, to: rep)
+        let image = NSImage(size: bubble.bounds.size)
+        image.addRepresentation(rep)
+
+        let oldFrame = bubble.frame
+        let overlay = BubbleSnapshotView(frame: oldFrame)
+        overlay.image = image
+        overlay.imageScaling = .scaleAxesIndependently
+        overlay.wantsLayer = true
+        overlay.alphaValue = 1
+        addSubview(overlay, positioned: .above, relativeTo: bubble)
+        bubbleTransition = overlay
+
+        bubble.alphaValue = 0
+        update()
+        let newFrame = bubble.frame
+        bubble.setFrameOrigin(NSPoint(x: newFrame.origin.x, y: newFrame.origin.y - 3))
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.26
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            overlay.animator().alphaValue = 0
+            overlay.animator().setFrameOrigin(NSPoint(x: oldFrame.origin.x, y: oldFrame.origin.y + 5))
+            bubble.animator().alphaValue = 1
+            bubble.animator().setFrameOrigin(newFrame.origin)
+        } completionHandler: { [weak self] in
+            overlay.removeFromSuperview()
+            if let self, self.bubbleTransition === overlay {
+                self.bubbleTransition = nil
+            }
+        }
+    }
+
+    private func clearBubbleTransition() {
+        bubbleTransition?.removeFromSuperview()
+        bubbleTransition = nil
+        bubble.alphaValue = 1
+    }
 
     /// Union of the parts that should accept a click, in stage coordinates.
     var interactiveRect: NSRect {

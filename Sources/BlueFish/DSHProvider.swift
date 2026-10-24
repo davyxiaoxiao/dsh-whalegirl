@@ -1,22 +1,26 @@
 import AppKit
 import Foundation
 
-/// Watches the DSH session store and turns it into pet-sized status.
+/// DSH adapter: watches `~/.dsh/sessions` and `dsh-cost-meter`, and turns them
+/// into the same `AgentSession` / `ProviderUsage` shape every other agent uses.
 ///
 /// The session log is an append-only file of concatenated zstd frames, one JSON
 /// event per line. We only need the last handful of events, so instead of
 /// decompressing whole (potentially 50 MB) logs we decompress the last chunk
-/// starting from a zstd frame boundary. That keeps the monitor at a few
-/// milliseconds per poll.
-final class DSHMonitor {
+/// starting from a zstd frame boundary. That keeps the poll at a few
+/// milliseconds.
+final class DSHProvider: AgentProvider {
     struct Config {
-        var pollInterval: TimeInterval = 1.5
         var tailBytes = 384 * 1024
         var bigTailBytes = 2 * 1024 * 1024
         var maxSessions = 40
-        var activeWindow: TimeInterval = 120
-        var log: ((String) -> Void)?
     }
+
+    let id = AgentProviderID.dsh
+    let displayName = "DeepSeek Harness"
+    let shortName = "DSH"
+    let capabilities: AgentCapabilities = [.sessions, .usage, .sessionJump, .reveal]
+    var watchPath: String? { rootURL.path }
 
     private struct HeaderInfo {
         var cwd: String = ""
@@ -32,109 +36,49 @@ final class DSHMonitor {
         var header: HeaderInfo?
         var headerTried = false
         var lastTurnStart: Date?
-        var snapshot: SessionSnapshot?
+        var snapshot: AgentSession?
     }
 
     private let config: Config
     private let rootURL: URL
-    private let queue = DispatchQueue(label: "bluefish.dsh-monitor", qos: .utility)
-    private var timer: DispatchSourceTimer?
+    private let usageReader: CostMeterLedgerReader
+    private let log: ((String) -> Void)?
     private var cache: [String: CacheEntry] = [:]
     private var archivedIDs: Set<String> = []
     private var workspaceMetaUpdatedAt: Date = .distantPast
     private var workspaceTitles: [String: String] = [:]
-
-    private var costUpdatedAt: Date = .distantPast
-    private var todayCost: Double?
-    private var todayCalls: Int?
-    private var todayTokens: Int?
-    private var planQuotas: [PlanQuota] = []
-
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let isoPlain: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
-    private let zstdPath: String?
-    private let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.timeZone = .current
-        return f
-    }()
-
-    private(set) var isPaused = false
     private var lastAppRunning = false
-    var onUpdate: ((DSHStatus) -> Void)?
 
-    init(config: Config = Config()) {
+    init(config: Config = Config(), log: ((String) -> Void)? = nil) {
         self.config = config
-        self.rootURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh/sessions", isDirectory: true)
-        self.zstdPath = DSHMonitor.findZstd()
-        self.config.log?("zstd=\(zstdPath ?? "not found")")
+        self.log = log
+        self.rootURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".dsh/sessions", isDirectory: true)
+        self.usageReader = CostMeterLedgerReader()
+        log?("zstd=\(ZstdTool.executablePath ?? "not found")")
     }
 
-    func start() {
-        queue.async { [weak self] in
-            self?.refreshLocked()
-        }
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + config.pollInterval, repeating: config.pollInterval, leeway: .milliseconds(300))
-        t.setEventHandler { [weak self] in
-            guard let self, !self.isPaused else { return }
-            self.refreshLocked()
-        }
-        t.resume()
-        timer = t
-    }
+    // MARK: - AgentProvider
 
-    func stop() {
-        timer?.cancel()
-        timer = nil
-    }
-
-    func setPaused(_ paused: Bool) {
-        queue.async {
-            self.isPaused = paused
-            if !paused { self.refreshLocked() }
-        }
-    }
-
-    /// Synchronous refresh, used by `--dump` and tests.
-    func refreshNow() -> DSHStatus {
-        queue.sync { self.scanLocked() }
-    }
-
-    private func refreshLocked() {
-        guard !isPaused else { return }
-        let status = scanLocked()
-        DispatchQueue.main.async { [weak self] in
-            self?.onUpdate?(status)
-        }
-    }
-
-    // MARK: - Scan
-
-    private func scanLocked() -> DSHStatus {
-        let now = Date()
+    func refresh(now: Date) -> ProviderStatus {
         updateWorkspaceMetaIfNeeded(now: now)
-        updateCostIfNeeded(now: now)
 
-        var sessions: [SessionSnapshot] = []
+        var sessions: [AgentSession] = []
         let fm = FileManager.default
-        let workspaceDirs = (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        let workspaceDirs = (try? fm.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
 
         var seen = Set<String>()
         for workspaceDir in workspaceDirs {
             guard (try? workspaceDir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
-            let sessionDirs = (try? fm.contentsOfDirectory(at: workspaceDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+            let sessionDirs = (try? fm.contentsOfDirectory(
+                at: workspaceDir,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
             for sessionDir in sessionDirs {
                 guard sessionDir.lastPathComponent.hasPrefix("session-") else { continue }
                 let logURL = sessionDir.appendingPathComponent("session.v4.jsonl.zstd")
@@ -164,7 +108,8 @@ final class DSHMonitor {
                         mtime: mtime,
                         header: entry.header,
                         parsed: parsed,
-                        turnStartHint: entry.lastTurnStart
+                        turnStartHint: entry.lastTurnStart,
+                        now: now
                     )
                     if !snapshot.turnActive { entry.lastTurnStart = nil }
                     if snapshot.title.isEmpty, let previous = entry.snapshot?.title { snapshot.title = previous }
@@ -179,7 +124,6 @@ final class DSHMonitor {
                         snapshot.turnStartedAt = entry.lastTurnStart
                     }
                     snapshot.isArchived = archivedIDs.contains(snapshot.id)
-                    entry.snapshot = snapshot
                     cache[path] = entry
                 }
 
@@ -195,24 +139,54 @@ final class DSHMonitor {
         }
 
         sessions.sort { $0.lastEventAt > $1.lastEventAt }
-        if sessions.count > config.maxSessions { sessions = Array(sessions.prefix(config.maxSessions)) }
+        if sessions.count > config.maxSessions {
+            sessions = Array(sessions.prefix(config.maxSessions))
+        }
 
-        let appRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.deepseek.dsh").isEmpty
+        let appRunning = !NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.deepseek.dsh")
+            .isEmpty
         let anyFresh = sessions.contains { now.timeIntervalSince($0.lastEventAt) < 12 }
         let wasAppRunning = lastAppRunning
         lastAppRunning = appRunning
-        var status = DSHStatus()
-        status.sessions = sessions
         // The desktop app quitting should flip the pet to "disconnected"
         // immediately; the freshness fallback only covers CLI-run backends.
-        status.dshRunning = appRunning || (!wasAppRunning && anyFresh)
-        status.todayCost = todayCost
-        status.todayCalls = todayCalls
-        status.todayTokens = todayTokens
-        status.planQuotas = planQuotas
-        status.updatedAt = now
-        return status
+        let running = appRunning || (!wasAppRunning && anyFresh)
+
+        let usage = usageReader.read(now: now).map { reading in
+            ProviderUsage(
+                providerID: id,
+                providerName: shortName,
+                today: reading.today,
+                quotas: reading.quotas,
+                sourceLabel: reading.sourceLabel
+            )
+        }
+
+        return ProviderStatus(
+            id: id,
+            name: displayName,
+            shortName: shortName,
+            running: running,
+            sessions: sessions,
+            usage: usage,
+            watchPath: rootURL.path,
+            capabilities: capabilities,
+            updatedAt: now
+        )
     }
+
+    func openSession(
+        _ session: AgentSession,
+        currentWorkspace: String?,
+        completion: @escaping (SessionOpenResult) -> Void
+    ) {
+        DSHFocus.jump(to: session, currentWorkspace: currentWorkspace) { outcome in
+            completion(SessionOpenResult(ok: outcome.ok, message: outcome.message))
+        }
+    }
+
+    // MARK: - Snapshot
 
     private func buildSnapshot(
         sessionDir: URL,
@@ -221,8 +195,9 @@ final class DSHMonitor {
         mtime: Date,
         header: HeaderInfo?,
         parsed: ParsedTail,
-        turnStartHint: Date?
-    ) -> SessionSnapshot {
+        turnStartHint: Date?,
+        now: Date
+    ) -> AgentSession {
         let id = sessionDir.lastPathComponent
         let workspaceDirName = sessionDir.deletingLastPathComponent().lastPathComponent
         let workspacePath = decodeWorkspacePath(workspaceDirName)
@@ -231,7 +206,7 @@ final class DSHMonitor {
         let title = parsed.title.isEmpty ? (header?.title ?? "") : parsed.title
         let parsedUser = parsed.lastUserText ?? ""
         let lastUser = parsedUser.isEmpty ? (header?.firstUserText ?? "") : parsedUser
-        var snapshot = SessionSnapshot(
+        var snapshot = AgentSession(
             id: id,
             directory: sessionDir.path,
             logPath: logURL.path,
@@ -240,7 +215,9 @@ final class DSHMonitor {
             workspaceName: workspaceName,
             createdAt: header?.createdAt,
             lastEventAt: parsed.lastEventAt == .distantPast ? mtime : parsed.lastEventAt,
-            fileModifiedAt: mtime
+            fileModifiedAt: mtime,
+            providerID: self.id,
+            providerName: self.shortName
         )
         snapshot.turnActive = parsed.turnActive
         snapshot.turnStartedAt = parsed.turnStartedAt ?? turnStartHint
@@ -262,7 +239,7 @@ final class DSHMonitor {
         snapshot.deliverables = parsed.deliverables
         snapshot.lastEventType = parsed.lastEventType
         snapshot.isArchived = archivedIDs.contains(id)
-        snapshot.derivePhase()
+        snapshot.derivePhase(now: now)
         return snapshot
     }
 
@@ -277,7 +254,8 @@ final class DSHMonitor {
     private func updateWorkspaceMetaIfNeeded(now: Date) {
         guard now.timeIntervalSince(workspaceMetaUpdatedAt) > 60 else { return }
         workspaceMetaUpdatedAt = now
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh/storages/workspace.json")
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".dsh/storages/workspace.json")
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if let global = obj["global"] as? [String: Any],
@@ -294,90 +272,6 @@ final class DSHMonitor {
                 for id in sessionIDs { titles[id] = title }
             }
             workspaceTitles = titles
-        }
-    }
-
-    private func updateCostIfNeeded(now: Date) {
-        guard now.timeIntervalSince(costUpdatedAt) > 20 else { return }
-        costUpdatedAt = now
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh/storages/cost-meter/ledger.json")
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            todayCost = nil
-            todayCalls = nil
-            todayTokens = nil
-            planQuotas = []
-            return
-        }
-
-        if let days = obj["days"] as? [String: Any],
-           let today = days[dateFormatter.string(from: now)] as? [String: Any] {
-            todayCost = (today["costCny"] as? NSNumber)?.doubleValue ?? (today["costCny"] as? Double)
-            todayCalls = (today["calls"] as? NSNumber)?.intValue ?? (today["calls"] as? Int)
-            let fields = ["input", "output", "cacheRead", "cacheWrite", "reasoning"]
-            todayTokens = fields.reduce(0) { partial, key in
-                partial + ((today[key] as? NSNumber)?.intValue ?? 0)
-            }
-        } else {
-            todayCost = nil
-            todayCalls = nil
-            todayTokens = nil
-        }
-
-        planQuotas = parsePlanQuotas(obj["planSamples"])
-    }
-
-    /// dsh-cost-meter keeps one sample per quota window:
-    ///   planSamples.go.fiveHour[] = { t, p, lt, lc, r, s }
-    /// where p is the provider-reported percentage, r the reset time and
-    /// lt / lc the locally counted tokens / cost at sample time.
-    private func parsePlanQuotas(_ raw: Any?) -> [PlanQuota] {
-        guard let providers = raw as? [String: Any] else { return [] }
-        let keys = providers.keys.sorted { a, b in
-            if a == "go" { return true }
-            if b == "go" { return false }
-            return a < b
-        }
-        let windowNames: [(String, String)] = [("fiveHour", "5h"), ("weekly", "周"), ("monthly", "月")]
-        var quotas: [PlanQuota] = []
-        for providerKey in keys {
-            guard let windows = providers[providerKey] as? [String: Any] else { continue }
-            let provider = planProviderLabel(providerKey)
-            var providerQuotas: [PlanQuota] = []
-            for (name, label) in windowNames {
-                guard let samples = windows[name] as? [[String: Any]] else { continue }
-                guard let latest = samples.last(where: { ($0["p"] as? NSNumber) != nil }) ?? samples.last else { continue }
-                let percent = (latest["p"] as? NSNumber)?.intValue ?? 0
-                let resetRaw = latest["r"] as? String
-                let reset = resetRaw.flatMap { Self.isoFractional.date(from: $0) ?? Self.isoPlain.date(from: $0) }
-                providerQuotas.append(PlanQuota(
-                    provider: provider,
-                    window: label,
-                    percent: percent,
-                    resetsAt: reset,
-                    sampledAt: dateFromMS(latest["t"])
-                ))
-            }
-            if !providerQuotas.isEmpty {
-                quotas = providerQuotas
-                break
-            }
-        }
-        return quotas
-    }
-
-    private func planProviderLabel(_ key: String) -> String {
-        switch key.lowercased() {
-        case "go": return "Go"
-        case "codex": return "Codex"
-        case "minimax": return "MiniMax"
-        case "volcengine-agent": return "火山"
-        case "tencent-coding", "tencent-token": return "腾讯"
-        case "baidu-coding": return "百度"
-        case "bailian": return "百炼"
-        default:
-            guard let first = key.first else { return key }
-            return first.uppercased() + key.dropFirst()
         }
     }
 
@@ -419,54 +313,17 @@ final class DSHMonitor {
 
     private func readTailEvents(logURL: URL, size: UInt64) -> [[String: Any]]? {
         for limit in [config.tailBytes, config.bigTailBytes] {
-            let data = readTail(logURL: logURL, size: size, limit: limit)
+            let data = LogTail.readTail(url: logURL, size: size, limit: limit)
             guard !data.isEmpty else { continue }
-            let candidates = frameOffsets(in: data).prefix(4)
+            let candidates = LogTail.frameOffsets(in: data).prefix(4)
             for offset in candidates {
                 let chunk = data.subdata(in: offset..<data.count)
-                guard let out = decompress(chunk), !out.isEmpty else { continue }
-                var events: [[String: Any]] = []
-                for line in out.split(separator: 0x0A) where line.count > 8 {
-                    guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
-                    events.append(obj)
-                }
-                if !events.isEmpty {
-                    return events.count > 800 ? Array(events.suffix(800)) : events
-                }
+                guard let out = ZstdTool.decompress(chunk), !out.isEmpty else { continue }
+                let events = LogTail.jsonObjects(fromDecompressed: out)
+                if !events.isEmpty { return events }
             }
         }
         return nil
-    }
-
-    private func readTail(logURL: URL, size: UInt64, limit: Int) -> Data {
-        guard let fh = try? FileHandle(forReadingFrom: logURL) else { return Data() }
-        defer { try? fh.close() }
-        let start = size > UInt64(limit) ? size - UInt64(limit) : 0
-        do {
-            try fh.seek(toOffset: start)
-            return fh.readDataToEndOfFile()
-        } catch {
-            return Data()
-        }
-    }
-
-    private func frameOffsets(in data: Data) -> [Int] {
-        guard data.count >= 4 else { return [] }
-        var offsets: [Int] = []
-        data.withUnsafeBytes { raw in
-            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-            let n = data.count - 3
-            var i = 0
-            while i < n {
-                if base[i] == 0x28, base[i + 1] == 0xB5, base[i + 2] == 0x2F, base[i + 3] == 0xFD {
-                    offsets.append(i)
-                    i += 4
-                } else {
-                    i += 1
-                }
-            }
-        }
-        return offsets
     }
 
     private func decode(_ event: [String: Any], type: String) -> [String: Any] {
@@ -738,9 +595,9 @@ final class DSHMonitor {
         defer { try? fh.close() }
         let data = (try? fh.read(upToCount: 96 * 1024)) ?? Data()
         guard !data.isEmpty else { return nil }
-        let offsets = frameOffsets(in: data)
+        let offsets = LogTail.frameOffsets(in: data)
         guard let first = offsets.first else { return nil }
-        guard let out = decompress(data.subdata(in: first..<data.count)) else { return nil }
+        guard let out = ZstdTool.decompress(data.subdata(in: first..<data.count)) else { return nil }
         var info = HeaderInfo()
         for line in out.split(separator: 0x0A).prefix(40) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
@@ -767,14 +624,14 @@ final class DSHMonitor {
                 }
             }
         }
-        config.log?("header \(logURL.lastPathComponent) cwd=\(info.cwd) title=\(info.title)")
+        log?("header \(logURL.lastPathComponent) cwd=\(info.cwd) title=\(info.title)")
         return info
     }
 
     /// If the pet starts while a turn is already in progress, the tail may not
     /// contain the turn/start event. Decompress once and find the last marker.
     private func lastTurnStartDate(logURL: URL) -> Date? {
-        guard let zstd = zstdPath else { return nil }
+        guard let zstd = ZstdTool.executablePath else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: zstd)
         process.arguments = ["-dc", "-q", logURL.path]
@@ -805,51 +662,6 @@ final class DSHMonitor {
         process.waitUntilExit()
         if let marker = lastMarker, marker.0 { return marker.1 }
         return nil
-    }
-
-    // MARK: - zstd
-
-    private func decompress(_ data: Data) -> Data? {
-        guard let zstd = zstdPath else { return nil }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: zstd)
-        process.arguments = ["-dc", "-q"]
-        let inPipe = Pipe()
-        let outPipe = Pipe()
-        process.standardInput = inPipe
-        process.standardOutput = outPipe
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        DispatchQueue.global(qos: .utility).async {
-            do {
-                try inPipe.fileHandleForWriting.write(contentsOf: data)
-                try inPipe.fileHandleForWriting.close()
-            } catch {
-                try? inPipe.fileHandleForWriting.close()
-            }
-        }
-        let out = outPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return out.isEmpty ? nil : out
-    }
-
-    private static func findZstd() -> String? {
-        var candidates: [String] = []
-        if let resources = Bundle.main.resourceURL {
-            candidates.append(resources.appendingPathComponent("zstd-helper").path)
-        }
-        if let executable = Bundle.main.executableURL {
-            candidates.append(executable.deletingLastPathComponent().appendingPathComponent("zstd-helper").path)
-        }
-        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        candidates.append(cwd.appendingPathComponent("build/zstd-helper").path)
-        candidates.append(contentsOf: [
-            "/opt/homebrew/bin/zstd",
-            "/usr/local/bin/zstd",
-            "/usr/bin/zstd",
-            "/opt/local/bin/zstd"
-        ])
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     // MARK: - Helpers
