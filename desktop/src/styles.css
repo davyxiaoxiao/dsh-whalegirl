@@ -262,6 +262,9 @@ button {
   border-radius: 50%;
   border: 1.5px solid rgba(150, 228, 255, 0.7);
   background: rgba(120, 220, 255, 0.16);
+  /* Hidden by default: if an OS "reduce motion" setting disables the
+     animation, the elements must not sit visibly at her feet. */
+  opacity: 0;
   animation: rise linear infinite;
 }
 .particles-fast .particle {
@@ -1154,9 +1157,11 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .pet-float,
   .pet-sway,
-  .particle,
   .deco-bubble,
   .waiting-ring {
     animation: none !important;
+  }
+  .particles {
+    display: none !important;
   }
 }
