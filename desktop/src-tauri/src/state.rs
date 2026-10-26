@@ -668,6 +668,11 @@ pub fn write_pet_state(app: &AppHandle) {
         "pid": std::process::id(),
         "updatedAt": chrono::Local::now().timestamp_millis() as f64 / 1000.0,
         "platform": std::env::consts::OS,
+        // Lets the DSH plugin find a manually copied / custom-directory exe
+        // even when the installer registry entry is absent.
+        "exe": std::env::current_exe()
+            .ok()
+            .map(|path| path.to_string_lossy().to_string()),
     });
     let path = state.paths.dsh_pet_state();
     if let Some(parent) = path.parent() {

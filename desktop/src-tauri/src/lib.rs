@@ -49,6 +49,7 @@ fn get_ui_state(app: AppHandle) -> UiState {
 
 #[tauri::command]
 fn toggle_board(app: AppHandle, open: Option<bool>) {
+    crate::diagnostics::write(format!("command: toggle_board open={open:?}"));
     state::toggle_board(&app, open);
 }
 
