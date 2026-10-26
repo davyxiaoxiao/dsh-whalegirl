@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Pet and task-board windows",
+  "windows": ["pet", "board"],
+  "permissions": ["core:default"]
+}

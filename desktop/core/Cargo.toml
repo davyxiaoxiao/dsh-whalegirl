@@ -1,0 +1,24 @@
+[package]
+name = "whalegirl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Provider-neutral agent monitoring core for the WhaleGirl desktop pet"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+zstd.workspace = true
+rusqlite.workspace = true
+dirs.workspace = true
+sysinfo.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "wg-dump"
+path = "src/bin/wg_dump.rs"

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 ROOT := $(shell pwd)
 
-.PHONY: build run snapshot preview art walk dist clean
+.PHONY: build run snapshot preview art walk dist clean desktop-install desktop-dev desktop-build desktop-test
 
 build:
 	./scripts/build_app.sh
@@ -27,3 +27,16 @@ dist: build
 
 clean:
 	rm -rf build .build snapshots dist
+
+desktop-install:
+	cd desktop && pnpm install
+
+desktop-dev:
+	cd desktop && pnpm tauri dev
+
+desktop-build:
+	cd desktop && pnpm tauri build
+
+desktop-test:
+	cd desktop && cargo test -p whalegirl-core
+	cd desktop && pnpm build

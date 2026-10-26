@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 .npm-cache*/
 dsh-plugin-bluefish-pet/
+/.pnpm-store/
+.DS_Store

@@ -4,9 +4,21 @@
 
 ![preview](preview.png)
 
-一只独立运行的 macOS 桌面宠物：**Q 版**蓝发女仆、小号鱼鳍耳、两条细腿（没有鱼尾）；干饭时趴在桌上吃白米饭，被你拖来拖去的时候会迈开小短腿走路。它顺便帮你盯着本地的编码代理——目前内置 DSH、Codex、OpenCode，费用和会话监控已经抽成适配器，后续接 Claude Code 只需要加一个 Provider。
+一只独立运行的桌面宠物（macOS 原版；macOS + Windows 跨平台版见下）：**Q 版**蓝发女仆、小号鱼鳍耳、两条细腿（没有鱼尾）；干饭时趴在桌上吃白米饭，被你拖来拖去的时候会迈开小短腿走路。它顺便帮你盯着本地的编码代理——目前内置 DSH、Codex、OpenCode，费用和会话监控已经抽成适配器，后续接 Claude Code 只需要加一个 Provider。
 
 它**不是 DSH 插件**，也不依赖 DSH 的窗口。DSH 最小化、切到别的 App、甚至只开着一个终端里的 `dsh`，小鱼都还在桌面上。
+
+## 跨平台版（macOS + Windows）
+
+`desktop/` 是新架构的跨平台重写：**Tauri 2 + Rust core + React**，macOS 与 Windows 共用同一份监控核心和同一份 UI。原 Swift/AppKit 版本保留在 `Sources/`，仍然可以 `make build`。
+
+- 监控核心：`whalegirl-core`（DSH / Codex / OpenCode、zstd 尾读、SQLite、费用与额度），不依赖 UI；
+- 桌面壳：透明置顶宠物窗、逐像素点击穿透、原生托盘、`127.0.0.1:47113` 控制端口、`bluefish://` 深链；
+- 前端：宠物动作/气泡/拖动/散步 + 深海任务台，配色和文案与旧版对齐；
+- 开发与打包：`cd desktop && pnpm install && pnpm tauri dev` / `pnpm tauri build`；
+- 详细架构、Windows 差异和已知缺口见 [`desktop/README.md`](desktop/README.md)。
+
+当前 macOS 上已经实机跑通（release `.app` 约 28 MB，见 `desktop/target/release/bundle/macos/鲸鱼娘.app`），Windows 安装包由 `.github/workflows/desktop.yml` 的 `windows-latest` 任务产出，仍需在真实 Windows 上做一轮 DPI / 多屏 / 安装器验收。
 
 ---
 

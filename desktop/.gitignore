@@ -1,0 +1,10 @@
+node_modules/
+dist/
+src-tauri/target/
+target/
+*.local
+.DS_Store
+
+# Rust
+.cargo-home/
+src-tauri/gen/
