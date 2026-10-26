@@ -97,7 +97,8 @@ pub fn clamp_scale(scale: f64) -> f64 {
 
 // MARK: - Setup
 
-pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+pub fn setup(app: &mut tauri::App, safe_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::diagnostics::write("setup: begin");
     let handle = app.handle().clone();
     // A desktop pet must not own the Dock or the app menu bar.
     #[cfg(target_os = "macos")]
@@ -105,7 +106,16 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     }
     let paths = WgPaths::default_paths();
-    let settings_path = app.path().app_config_dir()?.join("settings.json");
+    let settings_path = app
+        .path()
+        .app_config_dir()
+        .map(|dir| dir.join("settings.json"))
+        .unwrap_or_else(|_| {
+            std::env::temp_dir()
+                .join("com.daiwei.whalegirl")
+                .join("settings.json")
+        });
+    crate::diagnostics::write(format!("setup: settings={settings_path:?}"));
     let settings = load_settings(&settings_path);
 
     let mut ctx = ProviderContext::new(paths.clone());
@@ -133,7 +143,9 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         last_ignore: AtomicBool::new(false),
     });
 
-    apply_initial_window(&handle)?;
+    if let Err(error) = apply_initial_window(&handle) {
+        crate::diagnostics::write(format!("setup: apply_initial_window failed: {error:?}"));
+    }
     #[cfg(target_os = "macos")]
     {
         if let Some(pet) = handle.get_webview_window(PET_LABEL) {
@@ -143,10 +155,24 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             platform::configure_overlay(&board);
         }
     }
+    if safe_mode {
+        crate::diagnostics::write("setup: SAFE MODE (tray/control/monitor/deep-link skipped)");
+        write_pet_state(&handle);
+        crate::diagnostics::write("setup: done (safe mode)");
+        return Ok(());
+    }
+
     start_monitor(handle.clone());
     start_hit_test(handle.clone());
-    crate::menu::install_tray(&handle)?;
+    if let Err(error) = crate::menu::install_tray(&handle) {
+        crate::diagnostics::write(format!(
+            "setup: install_tray failed (continuing): {error:?}"
+        ));
+    } else {
+        crate::diagnostics::write("setup: tray installed");
+    }
     crate::control::start(handle.clone());
+    crate::diagnostics::write("setup: control started");
     write_pet_state(&handle);
 
     #[cfg(desktop)]
@@ -158,9 +184,12 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 handle_url(&deep_handle, url.as_str());
             }
         });
-        let _ = app.deep_link().register_all();
+        if let Err(error) = app.deep_link().register_all() {
+            crate::diagnostics::write(format!("setup: deep-link registration failed: {error}"));
+        }
     }
 
+    crate::diagnostics::write("setup: done");
     Ok(())
 }
 

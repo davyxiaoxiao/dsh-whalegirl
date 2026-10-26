@@ -1,6 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 mod control;
+mod diagnostics;
 mod menu;
 mod platform;
 mod state;
@@ -228,15 +229,24 @@ fn quit(app: AppHandle) {
     app.exit(0);
 }
 
+/// Write a startup marker and install a panic hook before Tauri is created.
+/// Safe to call from `main` even on the release Windows subsystem.
+pub fn install_diagnostics() {
+    diagnostics::install();
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let safe_mode =
+        std::env::args().any(|arg| arg == "--safe") || std::env::var("WHALEGIRL_SAFE_MODE").is_ok();
+    diagnostics::write(format!("run: building app (safe_mode={safe_mode})"));
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             state::show_pet(app);
             state::handle_args(app, &argv);
         }))
         .plugin(tauri_plugin_deep_link::init())
-        .setup(|app| {
-            state::setup(app)?;
+        .setup(move |app| {
+            state::setup(app, safe_mode)?;
             let handle = app.handle().clone();
             state::handle_args(&handle, &std::env::args().collect::<Vec<_>>());
             Ok(())
@@ -278,6 +288,10 @@ pub fn run() {
             check_updates,
             quit,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running WhaleGirl");
+        .run(tauri::generate_context!());
+    if let Err(error) = result {
+        diagnostics::write(format!("run error: {error:?}"));
+    } else {
+        diagnostics::write("run: exited normally");
+    }
 }
