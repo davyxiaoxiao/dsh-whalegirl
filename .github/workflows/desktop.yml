@@ -96,4 +96,4 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" desktop/target/release/bundle/nsis/*.exe --clobber
+        run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/nsis/*.exe --clobber
