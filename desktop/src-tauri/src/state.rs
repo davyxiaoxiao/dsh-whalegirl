@@ -209,6 +209,9 @@ fn apply_initial_window(app: &AppHandle) -> tauri::Result<()> {
         // the window stays focusable so native menus behave normally.
         #[cfg(target_os = "macos")]
         let _ = pet.set_focusable(false);
+        #[cfg(target_os = "windows")]
+        let _ = pet.set_ignore_cursor_events(false);
+        #[cfg(not(target_os = "windows"))]
         let _ = pet.set_ignore_cursor_events(true);
     }
     Ok(())
@@ -315,10 +318,16 @@ pub fn is_board_open(app: &AppHandle) -> bool {
 }
 
 pub fn set_board_open(app: &AppHandle, open: bool) {
+    crate::diagnostics::write(format!("board: set_board_open dispatch open={open}"));
     let handle = app.clone();
-    // Window creation must happen on the main thread; control-server and tray
-    // callbacks can arrive from other threads.
-    let _ = app.run_on_main_thread(move || set_board_open_main(&handle, open));
+    // Window creation must happen on the main thread. Calling
+    // `run_on_main_thread` directly from a Tauri command (already on the main
+    // thread) can wait for the very event loop it is blocking, freezing the
+    // pet. Always dispatch from a short-lived background thread.
+    std::thread::spawn(move || {
+        let inner = handle.clone();
+        let _ = handle.run_on_main_thread(move || set_board_open_main(&inner, open));
+    });
 }
 
 fn set_board_open_main(app: &AppHandle, open: bool) {
@@ -613,6 +622,8 @@ fn start_monitor(app: AppHandle) {
 // MARK: - Click-through
 
 fn start_hit_test(app: AppHandle) {
+    #[cfg(target_os = "windows")]
+    crate::diagnostics::write("hit-test: click-through disabled on Windows (0.1.3)");
     thread::spawn(move || loop {
         let state = app.state::<AppState>();
         let visible = state.visible.load(Ordering::Relaxed);
@@ -623,10 +634,20 @@ fn start_hit_test(app: AppHandle) {
             } else if dragging {
                 false
             } else {
-                let rect = *state.hit_rect.lock().unwrap_or_else(|e| e.into_inner());
-                match rect {
-                    Some(rect) => !platform::cursor_in_window(&pet, rect),
-                    None => true,
+                #[cfg(target_os = "windows")]
+                {
+                    // Global cursor hit-testing currently reports "outside" on
+                    // some Windows/DPI setups, making the pet unclickable. Keep
+                    // the whole (small) pet window interactive for now.
+                    false
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let rect = *state.hit_rect.lock().unwrap_or_else(|e| e.into_inner());
+                    match rect {
+                        Some(rect) => !platform::cursor_in_window(&pet, rect),
+                        None => true,
+                    }
                 }
             };
             if state.last_ignore.swap(target_ignore, Ordering::Relaxed) != target_ignore {
