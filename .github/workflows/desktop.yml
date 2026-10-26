@@ -89,6 +89,17 @@ jobs:
           if-no-files-found: error
           path: desktop/target/release/bundle/nsis/*.exe
 
+      - name: Attach macOS DMG to release
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dmg=$(ls target/release/bundle/dmg/*.dmg | head -1)
+          cp "$dmg" "WhaleGirl-${version}-macos-arm64.dmg"
+          gh release upload "$GITHUB_REF_NAME" "WhaleGirl-${version}-macos-arm64.dmg" --clobber
+
       # Tag builds attach the installer to the existing (draft) release, so it
       # never has to be downloaded through the slow artifact proxy first.
       - name: Attach Windows installer to release
@@ -96,7 +107,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/nsis/*.exe --clobber
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          installer=$(ls target/release/bundle/nsis/*.exe | head -1)
+          cp "$installer" "WhaleGirl-${version}-win-x64-setup.exe"
+          gh release upload "$GITHUB_REF_NAME" "WhaleGirl-${version}-win-x64-setup.exe" --clobber
 
       # Run the real installer and app on a Windows runner. This turns the
       # startup log into an actionable CI failure instead of a user report.
