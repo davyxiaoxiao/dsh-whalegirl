@@ -1,6 +1,6 @@
 # 鲸鱼娘 · 跨平台桌面版（macOS + Windows）
 
-这是 `desktop/` 目录下的新架构：**Tauri 2 + Rust core + React**。原 `Sources/` 里的 Swift/AppKit 版本继续保留，可以独立构建发版；两边共享 `Assets/` 立绘和本地日志格式。
+这是 1.3.0 起的唯一实现：**Tauri 2 + Rust core + React**，macOS 与 Windows 共用。旧的 Swift/AppKit 版本已从仓库移除，只保留在 git 历史和 v1.2.0 Release 存档中。
 
 ## 为什么是 Tauri，而不是继续 Swift
 
@@ -124,22 +124,15 @@ pnpm build                                            # tsc + vite
 # Rust core：19 个单测（日志解析、状态机、token、额度、路径、zstd、SQLite、权限）
 cargo test -p whalegirl-core
 
-# 与 Swift 版同机对比：会话数 / 费用 / 配额 / 标题
-./build/WhaleGirl.app/Contents/MacOS/WhaleGirl --dump
+# 完整 FleetView JSON（与桌面壳消费的是同一份数据）
 cargo run -p whalegirl-core --bin wg-dump -- --json
 ```
 
-macOS 实测对比（同一时刻）：
-
-```text
-Swift: providers=dsh:on,codex:on,opencode:off mood=working cost=5.5714 calls=444
-Rust : dsh running=true sessions=18 usage 5.5714448615868015 / 444
-       costLine = Go 5h 3% · Go 周 1% · Go 月 18% · 今日 49.2M tok
-```
+历史验证（旧 Swift 版已移除）：同一时刻 DSH 18 个会话、¥5.5714、444 次调用、配额 3% / 1% / 18% 一致。
 
 ## 已知缺口 / 下一步
 
-1. **DSH AX 精确跳转**：旧版用辅助功能树点侧栏会话；新版先复制会话名并激活 DSH。移植需要把 `DSHFocus.swift` 的 AX 遍历写成 objc2 + ApplicationServices，Windows 用 UI Automation。
+1. **DSH AX 精确跳转**：目前复制会话名 + 激活 DSH；移植需要在 macOS 用 ApplicationServices，Windows 用 UI Automation。
 2. **自动更新**：Tauri updater 需要 ed25519 签名密钥和 `latest.json` 发布通道；macOS 还需要 Developer ID 签名 + 公证。当前菜单里的“检查更新”会提示手动下载。
 3. **开机自启**：接 `tauri-plugin-autostart`，托盘菜单增加开关；DSH 插件的 `autoStart` 在 Windows 上也需要改成可配置路径。
 4. **菜单栏状态色点**：新版托盘已经是鲸鱼剪影（macOS 模板图标 / Windows 青色图标），但没有旧版右下角的 mood 色点；可在 Rust 里用 `image` 合成 16×16 色点。
@@ -147,21 +140,21 @@ Rust : dsh running=true sessions=18 usage 5.5714448615868015 / 444
 6. **Windows 实机验证**：DPI 150/200%、多显示器、任务栏在左/上、WebView2 缺失提示、NSIS/MSI 安装路径都需要在 Windows 上跑一遍。
 7. **提示音**：目前用 WebAudio 合成短音；旧版用 `NSSound` 系统音。若需要完全一致，可加 Rust 命令播放系统音。
 8. **CI 签名**：`.github/workflows/desktop.yml` 只出未签名安装包；发布前配置 Apple Developer ID / Windows 代码签名 secrets。
-9. **DSH 插件入口**：现有插件仍然从 `/Applications/WhaleGirl.app` 启动旧版；要让插件拉起跨平台版，需要改插件的可执行路径（或增加 Windows 分支）。
+9. **DSH 插件**：`dsh-bluefish-pet 1.1.3+` 已支持 macOS/Windows 和自定义目录；npm 上仍是 1.0.1，需要从 GitHub 安装。
 
 ## 发布
 
 ```bash
 cd desktop
 pnpm tauri build
-# macOS: src-tauri/target/release/bundle/dmg/*.dmg
-# Windows: src-tauri/target/release/bundle/nsis/*.exe / msi/*.msi
+# macOS: target/release/bundle/dmg/*.dmg
+# Windows: target/release/bundle/nsis/*.exe
 ```
 
 GitHub Actions 矩阵（macos-14 arm64 + windows-latest）见仓库根 `.github/workflows/desktop.yml`。
 
-## 和旧版的关系
+## 旧版
 
-- `Sources/`、`Assets/`、`scripts/build_app.sh`、`Makefile` 未改动，旧版仍可 `make build` / `make dist`。
-- 新版读取同样的本地数据，**不要同时运行两个桌宠**（会各开一个 47113，后启动的端口绑定失败但不影响宠物）。
+- Swift/AppKit 实现已在 1.3.0 后移除；`v1.2.0` Release 和 git 历史仍可查。
+- 不要同时运行旧 `WhaleGirl.app` 和新 `鲸鱼娘.app`：两者都监听 47113，后启动的控制端口会绑定失败。
 - 立绘是 `@assets` 别名直接引用仓库根 `Assets/`，没有复制第二份。
