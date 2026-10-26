@@ -71,6 +71,7 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         None::<&str>,
     )?;
 
+    #[allow(unused_mut)]
     let mut builder = MenuBuilder::new(app)
         .item(&header)
         .separator()

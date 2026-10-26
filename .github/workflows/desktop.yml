@@ -58,8 +58,15 @@ jobs:
       - name: Core tests
         run: cargo test -p whalegirl-core
 
-      - name: Build installers
+      - name: Build macOS bundles
+        if: runner.os == 'macOS'
         run: pnpm tauri build
+
+      # MSI (WiX) is limited to codepage 1252 here and cannot carry the Chinese
+      # product name; NSIS is Unicode and is the Windows installer we ship.
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        run: pnpm tauri build --bundles nsis
 
       - name: Upload macOS bundles
         if: runner.os == 'macOS'
@@ -68,8 +75,8 @@ jobs:
           name: whalegirl-${{ matrix.name }}
           if-no-files-found: error
           path: |
-            desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/release/bundle/macos/*.app
+            desktop/target/release/bundle/dmg/*.dmg
+            desktop/target/release/bundle/macos/*.app
 
       - name: Upload Windows installers
         if: runner.os == 'Windows'
@@ -77,6 +84,4 @@ jobs:
         with:
           name: whalegirl-${{ matrix.name }}
           if-no-files-found: error
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
+          path: desktop/target/release/bundle/nsis/*.exe
