@@ -11,3 +11,4 @@ dsh-plugin-bluefish-pet/
 /.pnpm-store/
 .DS_Store
 .gh-cache/
+release/
