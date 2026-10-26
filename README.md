@@ -2,6 +2,8 @@
 
 [下载 1.3.0](https://github.com/davyxiaoxiao/dsh-whalegirl/releases/tag/v1.3.0) · [DSH 插件](https://github.com/davyxiaoxiao/dsh-plugin-bluefish-pet)
 
+<img src="preview.png" width="820" alt="鲸鱼娘桌面宠物与深海任务台" />
+
 一只独立运行的透明桌宠：Q 版蓝发女仆、鱼鳍耳、小短腿；干饭时趴在桌上吃白米饭，被拖动时会迈步，松手会摔一跤再爬起来。它同时监控本地的编码代理：**DSH、Codex、OpenCode**。
 
 从 **1.3.0** 起，macOS 和 Windows 共用同一套 **Tauri 2 + Rust + React** 实现；旧的 Swift/AppKit 版本已从仓库移除，仅保留在 git 历史和 [v1.2.0 Release](https://github.com/davyxiaoxiao/dsh-whalegirl/releases/tag/v1.2.0) 中存档。
