@@ -135,4 +135,17 @@ jobs:
             throw 'whalegirl-app.exe exited during the 12s smoke window'
           }
           Write-Host 'whalegirl-app.exe is still running after 12s'
+
+          # The task board webview is created lazily; exercising it verifies the
+          # second WebView2 environment on the same Windows runner.
+          Write-Host 'Opening the task board (lazy second webview)...'
+          Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:47113/board' -TimeoutSec 5 | Out-Null
+          Start-Sleep -Seconds 4
+          if (-not (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)) {
+            Write-Host '--- whalegirl.log after board open ---'
+            if (Test-Path $log) { Get-Content $log -Tail 120 }
+            throw 'whalegirl-app.exe exited while creating the board webview'
+          }
+          Write-Host 'board opened; process is still running'
+
           Stop-Process -Id $proc.Id -Force

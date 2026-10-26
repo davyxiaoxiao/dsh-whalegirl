@@ -211,9 +211,6 @@ fn apply_initial_window(app: &AppHandle) -> tauri::Result<()> {
         let _ = pet.set_focusable(false);
         let _ = pet.set_ignore_cursor_events(true);
     }
-    if let Some(board) = app.get_webview_window(BOARD_LABEL) {
-        let _ = board.hide();
-    }
     Ok(())
 }
 
@@ -318,19 +315,65 @@ pub fn is_board_open(app: &AppHandle) -> bool {
 }
 
 pub fn set_board_open(app: &AppHandle, open: bool) {
+    let handle = app.clone();
+    // Window creation must happen on the main thread; control-server and tray
+    // callbacks can arrive from other threads.
+    let _ = app.run_on_main_thread(move || set_board_open_main(&handle, open));
+}
+
+fn set_board_open_main(app: &AppHandle, open: bool) {
     let state = app.state::<AppState>();
     state.board_open.store(open, Ordering::Relaxed);
-    if let Some(board) = app.get_webview_window(BOARD_LABEL) {
-        if open {
-            let _ = position_board(app, &board);
-            let _ = board.show();
-            let _ = board.set_focus();
-        } else {
-            let _ = board.hide();
-        }
+    if open {
+        let board = match ensure_board(app) {
+            Ok(board) => board,
+            Err(error) => {
+                crate::diagnostics::write(format!("board: create failed: {error:?}"));
+                return;
+            }
+        };
+        let _ = position_board(app, &board);
+        let _ = board.show();
+        let _ = board.set_focus();
+    } else if let Some(board) = app.get_webview_window(BOARD_LABEL) {
+        let _ = board.hide();
     }
     let _ = app.emit("board:open", open);
     crate::menu::rebuild_tray(app);
+}
+
+/// The board webview is created lazily. Creating both webviews at startup
+/// crashes some Windows WebView2 versions inside
+/// `CreateSharedWebViewEnvironmentInternal` (a non-unwindable panic).
+fn ensure_board(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    if let Some(board) = app.get_webview_window(BOARD_LABEL) {
+        return Ok(board);
+    }
+    crate::diagnostics::write("board: creating webview on demand");
+    let board = tauri::WebviewWindowBuilder::new(
+        app,
+        BOARD_LABEL,
+        tauri::WebviewUrl::App("index.html?view=board".into()),
+    )
+    .title("深海任务台")
+    .inner_size(420.0, 544.0)
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(false)
+    .shadow(false)
+    .focused(true)
+    .visible(false)
+    .visible_on_all_workspaces(true)
+    .build()?;
+    #[cfg(target_os = "macos")]
+    platform::configure_overlay(&board);
+    crate::diagnostics::write("board: webview created");
+    Ok(board)
 }
 
 pub fn toggle_board(app: &AppHandle, open: Option<bool>) {
