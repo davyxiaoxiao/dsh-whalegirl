@@ -65,6 +65,16 @@ jobs:
         if: runner.os == 'macOS'
         run: pnpm tauri build
 
+      # An .app that only carries the linker's ad-hoc signature (no sealed
+      # resources) opens as "已损坏，无法打开" on Apple Silicon, which is what
+      # 1.3.0 shipped. Fail the build rather than publish such a bundle.
+      - name: Verify macOS bundle signature
+        if: runner.os == 'macOS'
+        run: |
+          app=$(ls -d target/release/bundle/macos/*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dvv "$app" 2>&1 | grep -q 'Sealed Resources'
+
       # MSI (WiX) is limited to codepage 1252 here and cannot carry the Chinese
       # product name; NSIS is Unicode and is the Windows installer we ship.
       - name: Build Windows installer

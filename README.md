@@ -1,6 +1,6 @@
 # 鲸鱼娘 · macOS + Windows 桌面宠物
 
-[下载 1.3.0](https://github.com/davyxiaoxiao/dsh-whalegirl/releases/tag/v1.3.0) · [DSH 插件](https://github.com/davyxiaoxiao/dsh-plugin-bluefish-pet)
+[下载 1.3.1](https://github.com/davyxiaoxiao/dsh-whalegirl/releases/tag/v1.3.1) · [DSH 插件](https://github.com/davyxiaoxiao/dsh-plugin-bluefish-pet)
 
 <img src="preview.png" width="820" alt="鲸鱼娘桌面宠物与深海任务台" />
 
@@ -21,14 +21,21 @@
 
 ## 安装
 
-- **macOS 13+（Apple Silicon）**：下载 `.dmg`，拖进「应用程序」。未签名，首次右键 →「打开」。
+- **macOS 13+（Apple Silicon）**：下载 `.dmg`，拖进「应用程序」。安装包为 ad-hoc 签名、未经 Apple 公证，首次启动右键 →「打开」→「打开」即可。
 - **Windows 10/11 x64**：运行 NSIS 安装包；未签名，SmartScreen 选「更多信息 → 仍要运行」。
 
-当前 1.3.0 资产：
+> **1.3.0 的 macOS 安装包已损坏**，1.3.1 已修复：1.3.0 的 `.app` 只有链接器写下的占位签名，没有封装资源签名，Apple Silicon 上会报「“鲸鱼娘”已损坏，无法打开」，右键「打开」也无效。1.3.1 在 `bundle.macOS.signingIdentity` 里显式要求 ad-hoc 签名，CI 也会用 `codesign --verify` 卡住同类产物。仍装着 1.3.0 的话，直接覆盖安装 1.3.1，或执行：
+>
+> ```bash
+> xattr -cr "/Applications/鲸鱼娘.app"
+> codesign --force --deep --sign - "/Applications/鲸鱼娘.app"
+> ```
+
+当前 1.3.1 资产：
 
 ```text
-WhaleGirl-1.3.0-macos-arm64.dmg
-WhaleGirl-1.3.0-win-x64-setup.exe
+WhaleGirl-1.3.1-macos-arm64.dmg
+WhaleGirl-1.3.1-win-x64-setup.exe
 ```
 
 ## 随 DSH 自启
